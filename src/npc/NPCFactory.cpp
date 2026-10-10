@@ -48,6 +48,20 @@ std::vector<NPCEntry> NPCFactory::GetNPCList() const {
         if (entry.name.empty() && entry.editorID.empty()) {
             entry.name = "Unknown NPC";
         }
+
+        auto* race = npc->GetRace();
+        if (race) {
+            const char* raceName = race->GetName();
+            entry.race = raceName ? raceName : "";
+            if (entry.race.empty()) {
+                const char* raceEdid = race->GetFormEditorID();
+                entry.race = raceEdid ? raceEdid : "";
+            }
+        }
+
+        entry.gender = npc->IsFemale() ? "Female" : "Male";
+
+        entry.level = npc->GetLevel();
         
         result.push_back(std::move(entry));
     }

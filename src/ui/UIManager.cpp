@@ -109,6 +109,9 @@ void UIManager::Register() {
             entry["formID"] = npc.formID;
             entry["editorID"] = npc.editorID;
             entry["name"] = npc.name;
+            entry["race"] = npc.race;
+            entry["gender"] = npc.gender;
+            entry["level"] = npc.level;
             j.push_back(entry);
         }
         
@@ -149,6 +152,17 @@ void UIManager::Register() {
         return enabled ? "true" : "false";
     });
 
+    bridge.RegisterJSListener(m_view, "requestNPCPreview", [](const std::string& formIdStr) -> std::string {
+        try {
+            uint32_t formID = std::stoul(formIdStr, nullptr, 16);
+            spdlog::info("requestNPCPreview: FormID={:08X}", formID);
+            return "ok";
+        } catch (...) {
+            spdlog::error("Invalid FormID in requestNPCPreview: {}", formIdStr);
+            return "error";
+        }
+    });
+
     spdlog::info("UIManager registered (dashboard hidden, press SHIFT+8 to open)");
 }
 
@@ -168,6 +182,9 @@ void UIManager::OpenDashboard() {
         entry["formID"] = npc.formID;
         entry["editorID"] = npc.editorID;
         entry["name"] = npc.name;
+        entry["race"] = npc.race;
+        entry["gender"] = npc.gender;
+        entry["level"] = npc.level;
         j.push_back(entry);
     }
     

@@ -9,6 +9,9 @@ struct NPCEntry {
     uint32_t formID;
     std::string editorID;
     std::string name;
+    std::string race;
+    std::string gender;
+    int level;
 };
 
 class NPCFactory {
