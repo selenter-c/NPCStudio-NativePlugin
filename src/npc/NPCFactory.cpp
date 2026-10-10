@@ -4,6 +4,9 @@
 #include <RE/T/TESForm.h>
 #include <RE/P/PlayerCharacter.h>
 #include <RE/T/TESObjectREFR.h>
+#include <RE/T/TESObjectCELL.h>
+#include <RE/T/TESWorldSpace.h>
+#include <RE/A/Actor.h>
 #include <RE/N/NiPoint3.h>
 #include <spdlog/spdlog.h>
 #include <cmath>
@@ -56,57 +59,99 @@ std::vector<NPCEntry> NPCFactory::GetNPCList() const {
 bool NPCFactory::SpawnNPC(uint32_t formID) {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        spdlog::error("Player not found");
+        spdlog::error("SpawnNPC: PlayerCharacter not found");
+        return false;
+    }
+
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+        spdlog::error("SpawnNPC: TESDataHandler not available");
         return false;
     }
 
     auto* base = RE::TESForm::LookupByID<RE::TESNPC>(formID);
     if (!base) {
-        spdlog::error("NPC with FormID {:08X} not found", formID);
+        spdlog::error("SpawnNPC: TESNPC {:08X} not found", formID);
         return false;
     }
 
-    auto pos = player->GetPosition();
-    auto angle = player->GetAngle();
-    
-    float spawnDist = 150.0f;
-    RE::NiPoint3 spawnPos;
-    spawnPos.x = pos.x + spawnDist * std::sin(angle.z);
-    spawnPos.y = pos.y + spawnDist * std::cos(angle.z);
-    spawnPos.z = pos.z;
+    auto* parentCell = player->GetParentCell();
+    auto* worldSpace = player->GetWorldspace();
 
-    RE::NiPoint3 spawnRot;
-    spawnRot.x = 0.0f;
-    spawnRot.y = 0.0f;
-    spawnRot.z = angle.z + 3.14159f;
-
-    auto* dataHandler = RE::TESDataHandler::GetSingleton();
-    if (!dataHandler) {
-        spdlog::error("TESDataHandler not available for spawning");
+    if (!parentCell) {
+        spdlog::error("SpawnNPC: Player has no parent cell");
         return false;
     }
+
+    const auto pos = player->GetPosition();
+    const auto angle = player->GetAngle();
+
+    constexpr float spawnDist = 150.0f;
+
+    RE::NiPoint3 spawnPos{
+        pos.x + spawnDist * std::sin(angle.z),
+        pos.y + spawnDist * std::cos(angle.z),
+        pos.z
+    };
+
+    RE::NiPoint3 spawnAngle{
+        0.0f,
+        0.0f,
+        angle.z + 3.14159265f
+    };
+
+    spdlog::info(
+        "SpawnNPC: base={:08X}, cell={:08X}, worldspace={}, pos=({:.2f}, {:.2f}, {:.2f})",
+        base->GetFormID(),
+        parentCell->GetFormID(),
+        worldSpace ? fmt::format("{:08X}", worldSpace->GetFormID()) : "null",
+        spawnPos.x, spawnPos.y, spawnPos.z
+    );
 
     auto handle = dataHandler->CreateReferenceAtLocation(
         base,
         spawnPos,
-        spawnRot,
-        player->GetParentCell(),
-        nullptr,
+        spawnAngle,
+        parentCell,
+        worldSpace,
         nullptr,
         nullptr,
         RE::ObjectRefHandle(),
         true,
-        false
+        true
     );
 
-    if (!handle.get()) {
-        spdlog::error("CreateReferenceAtLocation failed for NPC {:08X}", formID);
+    auto ref = handle.get();
+
+    if (!ref) {
+        spdlog::error("SpawnNPC: CreateReferenceAtLocation failed for base {:08X}", formID);
         return false;
     }
 
+    auto* actor = ref->As<RE::Actor>();
+
+    if (!actor) {
+        spdlog::error(
+            "SpawnNPC: Reference {:08X} is not an Actor; base={:08X}",
+            ref->GetFormID(), formID
+        );
+        return false;
+    }
+
+    actor->Enable(false);
+
     const char* name = base->GetName();
-    spdlog::info("Spawned NPC '{}' ({:08X}) at player position", 
-                 name ? name : "unknown", formID);
+
+    spdlog::info(
+        "SpawnNPC: created '{}' base={:08X}, reference={:08X}, disabled={}, is3DLoaded={}, get3D={}",
+        name ? name : "Unknown",
+        base->GetFormID(),
+        actor->GetFormID(),
+        actor->IsDisabled(),
+        actor->Is3DLoaded(),
+        actor->Get3D() != nullptr
+    );
+
     return true;
 }
 

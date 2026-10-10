@@ -97,8 +97,11 @@ void UIManager::Register() {
     });
 
     bridge.RegisterJSListener(m_view, "getNPCList", [this](const std::string&) -> std::string {
+        spdlog::info("getNPCList called from JS");
         auto& factory = NPC::NPCFactory::GetSingleton();
         auto list = factory.GetNPCList();
+        
+        spdlog::info("getNPCList: got {} NPCs from factory", list.size());
         
         json j = json::array();
         for (const auto& npc : list) {
@@ -110,7 +113,20 @@ void UIManager::Register() {
         }
         
         auto jsonStr = j.dump();
+        spdlog::info("getNPCList: sending {} bytes of JSON to JS via setNPCList", jsonStr.size());
+        if (list.size() <= 5) {
+            for (const auto& npc : list) {
+                spdlog::info("  NPC: formID={:08X} name='{}' editorID='{}'", npc.formID, npc.name, npc.editorID);
+            }
+        } else {
+            for (size_t i = 0; i < 3; i++) {
+                spdlog::info("  NPC[{}]: formID={:08X} name='{}' editorID='{}'", i, list[i].formID, list[i].name, list[i].editorID);
+            }
+            spdlog::info("  ... and {} more", list.size() - 3);
+        }
+        
         API::PrismUIBridge::GetSingleton().CallJS(m_view, "setNPCList", jsonStr);
+        spdlog::info("getNPCList: CallJS completed");
         return "ok";
     });
 
@@ -141,6 +157,23 @@ void UIManager::OpenDashboard() {
     API::PrismUIBridge::GetSingleton().ShowView(m_view, m_pauseGame);
     m_isOpen = true;
     spdlog::info("Dashboard opened (pause={})", m_pauseGame);
+    
+    // Auto-refresh NPC list on open
+    auto& factory = NPC::NPCFactory::GetSingleton();
+    auto list = factory.GetNPCList();
+    
+    json j = json::array();
+    for (const auto& npc : list) {
+        json entry;
+        entry["formID"] = npc.formID;
+        entry["editorID"] = npc.editorID;
+        entry["name"] = npc.name;
+        j.push_back(entry);
+    }
+    
+    auto jsonStr = j.dump();
+    spdlog::info("Auto-refresh: sending {} NPCs to UI", list.size());
+    API::PrismUIBridge::GetSingleton().CallJS(m_view, "setNPCList", jsonStr);
 }
 
 void UIManager::CloseDashboard() {
