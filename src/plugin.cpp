@@ -1,6 +1,8 @@
 #include "PCH.h"
 #include <spdlog/sinks/basic_file_sink.h>
 #include <filesystem>
+#include "ui/UIManager.h"
+#include "input/InputHandler.h"
 
 namespace NPCStudio {
     constexpr const char* PLUGIN_NAME = "NPC Studio";
@@ -35,6 +37,8 @@ namespace NPCStudio {
         switch (a_msg->type) {
             case SKSE::MessagingInterface::kDataLoaded:
                 logger::info("DataLoaded - all game data loaded");
+                NPCStudio::UI::UIManager::GetSingleton().Register();
+                NPCStudio::Input::InputHandler::GetSingleton()->Register();
                 logger::info("NPC Studio ready");
                 break;
 

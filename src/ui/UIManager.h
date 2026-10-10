@@ -1,6 +1,4 @@
 #pragma once
-// TODO: Stage 2 — реализовать управление PrismUI Dashboard
-// REF: см. IntelEngine-NativePlugin/SKSE/src/DashboardUIManager.cpp
 #include <string>
 
 namespace NPCStudio::UI {
@@ -11,10 +9,16 @@ namespace NPCStudio::UI {
         void OpenDashboard();
         void CloseDashboard();
         void ToggleDashboard();
-        bool IsOpen() const { return m_isOpen; }
+        bool IsOpen() const;
+        bool IsPauseEnabled() const;
+        void SetPauseEnabled(bool enabled);
     private:
         UIManager() = default;
+        void LoadSettings();
+        void SaveSettings();
+        
         void* m_view = nullptr;
         bool m_isOpen = false;
+        bool m_pauseGame = false;
     };
 }

@@ -1,11 +1,15 @@
 #pragma once
-// TODO: Stage 2 — реализовать обработку ввода SHIFT+8
-// REF: см. IntelEngine-NativePlugin/SKSE/src/ — паттерны обработки ввода
+#include <RE/B/BSTEvent.h>
+#include <RE/I/InputEvent.h>
+
 namespace NPCStudio::Input {
-    class InputHandler {
+    class InputHandler : public RE::BSTEventSink<RE::InputEvent*> {
     public:
         static InputHandler* GetSingleton();
         bool Register();
+        RE::BSEventNotifyControl ProcessEvent(
+            RE::InputEvent* const* a_event,
+            RE::BSTEventSource<RE::InputEvent*>* a_eventSource) override;
     private:
         InputHandler() = default;
         bool m_shiftPressed = false;

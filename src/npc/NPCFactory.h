@@ -1,11 +1,25 @@
 #pragma once
-// TODO: Stage 3 — реализовать спавн NPC через PlaceAtMe
-// TODO: Stage 4 — реализовать клонирование внешности
-// TODO: Stage 5 — реализовать GetPlaceholderList
-// REF: см. IntelEngine-NativePlugin/SKSE/src/ — примеры работы с акторами
+#include <string>
+#include <vector>
+#include <cstdint>
+
 namespace NPCStudio::NPC {
-    class NPCFactory {
-    public:
-        static RE::Actor* SpawnBeforePlayer(RE::FormID placeholderFormID);
-    };
-}
+
+struct NPCEntry {
+    uint32_t formID;
+    std::string editorID;
+    std::string name;
+};
+
+class NPCFactory {
+public:
+    static NPCFactory& GetSingleton();
+    
+    std::vector<NPCEntry> GetNPCList() const;
+    bool SpawnNPC(uint32_t formID);
+    
+private:
+    NPCFactory() = default;
+};
+
+} // namespace NPCStudio::NPC
