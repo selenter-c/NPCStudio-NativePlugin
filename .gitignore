@@ -1,0 +1,11 @@
+build/
+dist/
+*.dll
+*.pdb
+*.lib
+*.exp
+*.log
+.vs/
+.vscode/
+CMakeSettings.json
+out/
