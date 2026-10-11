@@ -62,6 +62,8 @@ void NifViewerBridge::HandleCommand(const std::string& command, const std::strin
         HandleGetStatus(requestId);
     } else if (command == "getNPCMeshPath") {
         HandleGetNPCMeshPath(requestId, jsonPayload);
+    } else if (command == "loadNPC") {
+        HandleLoadNPC(requestId, jsonPayload);
     } else {
         SendError(requestId, "UNKNOWN_COMMAND", "Unknown command: " + command);
     }
@@ -287,6 +289,51 @@ void NifViewerBridge::HandleGetStatus(const std::string& requestId) {
     SendResponse("status", response.dump());
 }
 
+static std::string GetPluginFilenameWithExt(RE::TESFile* file) {
+    if (!file) return "Skyrim.esm";
+    return std::string(file->GetFilename());
+}
+
+void NifViewerBridge::HandleLoadNPC(const std::string& requestId, const std::string& payload) {
+    try {
+        auto j = json::parse(payload);
+        uint32_t formID = j.value("formID", 0u);
+
+        if (formID == 0) {
+            SendError(requestId, "INVALID_FORMID", "FormID is required");
+            return;
+        }
+
+        uint32_t width = j.value("width", 512u);
+        uint32_t height = j.value("height", 512u);
+
+        spdlog::info("[NPC] LoadNPC command: formID={:08X}, {}x{}", formID, width, height);
+
+        bool success = m_service->LoadNPC(formID, width, height);
+
+        json response;
+        response["event"] = "npcLoaded";
+        response["requestId"] = requestId;
+        response["success"] = success;
+        response["formID"] = formID;
+
+        if (success) {
+            std::string frameData = m_service->RenderFrame();
+            if (!frameData.empty()) {
+                response["frameData"] = frameData;
+                spdlog::info("[NPC] Frame rendered after NPC load: {} bytes", frameData.size());
+            }
+        } else {
+            response["error"] = m_service->GetLastError();
+        }
+
+        SendResponse("npcLoaded", response.dump());
+
+    } catch (const std::exception& e) {
+        SendError(requestId, "PARSE_ERROR", std::string("Invalid loadNPC payload: ") + e.what());
+    }
+}
+
 void NifViewerBridge::HandleGetNPCMeshPath(const std::string& requestId, const std::string& payload) {
     try {
         auto j = json::parse(payload);
@@ -315,21 +362,20 @@ void NifViewerBridge::HandleGetNPCMeshPath(const std::string& requestId, const s
             return;
         }
 
-        std::string pluginName = "Skyrim.esm";
-        auto* file = npc->GetFile();
-        if (file) {
-            pluginName = file->GetFilename();
-        }
-
+        // Use the ORIGINAL NPC's defining file, NOT GetRootFaceNPC()
+        auto* definingFile = npc->GetFile();
+        std::string pluginFilename = GetPluginFilenameWithExt(definingFile);
         uint32_t localFormID = formID & 0x00FFFFFF;
+        
         char faceGenPath[512];
         snprintf(faceGenPath, sizeof(faceGenPath),
                  "meshes\\actors\\character\\facegendata\\facegeom\\%s\\%08X.nif",
-                 pluginName.c_str(),
+                 pluginFilename.c_str(),
                  static_cast<unsigned int>(localFormID));
 
         std::string meshPath = faceGenPath;
-        spdlog::info("Resolved NPC mesh path: {} (formID={:08X}, plugin={})", meshPath, formID, pluginName);
+        spdlog::info("[NPC] Resolved FaceGen path: {} (formID={:08X}, plugin={}, localID={:08X})", 
+                     meshPath, formID, pluginFilename, localFormID);
 
         json response;
         response["event"] = "npcMeshPath";
@@ -337,6 +383,8 @@ void NifViewerBridge::HandleGetNPCMeshPath(const std::string& requestId, const s
         response["success"] = true;
         response["meshPath"] = meshPath;
         response["formID"] = formID;
+        response["pluginName"] = pluginFilename;
+        response["localFormID"] = localFormID;
 
         SendResponse("npcMeshPath", response.dump());
 

@@ -3,6 +3,7 @@
 #include "NifModelLoader.h"
 #include "NifRenderBackend.h"
 #include "NifFrameTransport.h"
+#include "NPCModelAssembler.h"
 #include <string>
 #include <cstdint>
 
@@ -25,6 +26,7 @@ public:
     void Shutdown();
 
     bool LoadModel(const std::string& assetPath, uint32_t width = 512, uint32_t height = 512);
+    bool LoadNPC(uint32_t formID, uint32_t width = 512, uint32_t height = 512);
     void UnloadModel();
 
     void Rotate(float deltaYaw, float deltaPitch);
@@ -45,6 +47,7 @@ private:
     NifViewerService() = default;
 
     NifModelLoader m_modelLoader;
+    NPCModelAssembler m_npcAssembler;
     NifRenderBackend m_renderer;
     NifFrameTransport m_transport;
 

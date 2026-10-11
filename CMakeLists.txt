@@ -71,6 +71,7 @@ set(SOURCES
     src/nifviewer/NifRenderTarget.cpp
     src/nifviewer/NifFrameTransport.cpp
     src/nifviewer/NifViewerBridge.cpp
+    src/nifviewer/NPCModelAssembler.cpp
 )
 
 # =============================================================================

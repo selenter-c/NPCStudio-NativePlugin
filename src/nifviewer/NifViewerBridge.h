@@ -33,6 +33,7 @@ private:
     void HandleSetVisible(const std::string& requestId, const std::string& payload);
     void HandleGetStatus(const std::string& requestId);
     void HandleGetNPCMeshPath(const std::string& requestId, const std::string& payload);
+    void HandleLoadNPC(const std::string& requestId, const std::string& payload);
 
     void SendError(const std::string& requestId, const std::string& code, const std::string& message);
 

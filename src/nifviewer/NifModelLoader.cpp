@@ -45,6 +45,74 @@ static std::string ResolveGameDataPath(const std::string& relativePath) {
     return fullPath;
 }
 
+static std::vector<uint8_t> ReadBSResourceFully(const std::string& assetPath) {
+    std::vector<uint8_t> buffer;
+    
+    // Try both backslash and forward slash versions
+    std::string pathForward = assetPath;
+    std::replace(pathForward.begin(), pathForward.end(), '\\', '/');
+    
+    spdlog::info("[NIF] Trying BSResource with backslash path: {}", assetPath);
+    RE::BSResourceNiBinaryStream bsStream(assetPath.c_str());
+    
+    if (!bsStream.good() || bsStream.lastError != RE::BSResource::ErrorCode::kNone) {
+        spdlog::warn("[NIF] Backslash path failed, trying forward slash: {}", pathForward);
+        RE::BSResourceNiBinaryStream bsStream2(pathForward.c_str());
+        
+        if (!bsStream2.good() || bsStream2.lastError != RE::BSResource::ErrorCode::kNone) {
+            spdlog::error("[NIF] BSResource failed for both path formats: lastError={}", 
+                          static_cast<int>(bsStream2.lastError));
+            return buffer;
+        }
+        
+        // Use the forward-slash stream
+        std::swap(bsStream.stream, bsStream2.stream);
+        std::swap(bsStream.buffer, bsStream2.buffer);
+        std::swap(bsStream.streamPos, bsStream2.streamPos);
+        std::swap(bsStream.lastError, bsStream2.lastError);
+    }
+    
+    RE::NiBinaryStream::BufferInfo info{};
+    bsStream.get_info(info);
+    spdlog::info("[NIF] BSResource BufferInfo: totalSize={}, bufferAllocSize={}, bufferReadSize={}",
+                 info.totalSize, info.bufferAllocSize, info.bufferReadSize);
+    
+    if (info.totalSize > 0) {
+        buffer.resize(info.totalSize);
+        uint32_t posBefore = bsStream.tell();
+        bool readOk = bsStream.read(reinterpret_cast<char*>(buffer.data()), info.totalSize);
+        uint32_t posAfter = bsStream.tell();
+        uint32_t actualRead = posAfter - posBefore;
+        
+        spdlog::info("[NIF] BSResource bulk read: requested={}, actual={}, ok={}", 
+                     info.totalSize, actualRead, readOk);
+        
+        if (actualRead < info.totalSize) {
+            buffer.resize(actualRead);
+        }
+    } else {
+        spdlog::info("[NIF] BSResource totalSize=0, reading in chunks");
+        char chunk[4096];
+        while (bsStream.good()) {
+            uint32_t posBefore = bsStream.tell();
+            bool fullRead = bsStream.read(chunk, sizeof(chunk));
+            uint32_t posAfter = bsStream.tell();
+            uint32_t bytesRead = posAfter - posBefore;
+            
+            if (bytesRead > 0) {
+                buffer.insert(buffer.end(), chunk, chunk + bytesRead);
+            }
+            
+            if (!fullRead || bytesRead == 0) {
+                break;
+            }
+        }
+        spdlog::info("[NIF] BSResource chunked read: {} bytes total", buffer.size());
+    }
+    
+    return buffer;
+}
+
 bool NifModelLoader::LoadFromFile(const std::string& path) {
     Unload();
 
@@ -62,73 +130,78 @@ bool NifModelLoader::LoadFromFile(const std::string& path) {
     }
 
     std::string fullPath = ResolveGameDataPath(normalizedPath);
-    spdlog::info("Loading NIF: {} -> {}", normalizedPath, fullPath);
+    spdlog::info("[NIF] Requested asset: {}", normalizedPath);
+    spdlog::info("[NIF] Resolved full path: {}", fullPath);
 
     try {
         nifly::NifFile nif;
         int result = -1;
+        std::string source;
 
-        if (std::filesystem::exists(fullPath)) {
-            result = nif.Load(fullPath);
-            spdlog::info("Loaded from loose file: {}", fullPath);
-        } else {
-            spdlog::info("File not found on disk, trying BSResource: {}", normalizedPath);
+        bool looseExists = std::filesystem::exists(fullPath);
+        spdlog::info("[NIF] Loose file exists: {}", looseExists);
+
+        if (looseExists) {
+            auto fileSize = std::filesystem::file_size(fullPath);
+            spdlog::info("[NIF] Loose file size: {} bytes", fileSize);
             
-            RE::BSResourceNiBinaryStream bsStream(normalizedPath.c_str());
-            if (bsStream.good() && bsStream.lastError == RE::BSResource::ErrorCode::kNone) {
-                std::vector<uint8_t> buffer;
-                char chunk[4096];
-                
-                while (bsStream.good()) {
-                    bsStream.read(chunk, sizeof(chunk));
-                    auto bytesRead = bsStream.tell();
-                    if (bytesRead > 0 && static_cast<size_t>(bytesRead) <= sizeof(chunk)) {
-                        buffer.insert(buffer.end(), chunk, chunk + bytesRead);
-                    }
-                    if (static_cast<size_t>(bytesRead) < sizeof(chunk)) {
-                        break;
-                    }
-                }
-                
-                if (!buffer.empty()) {
-                    std::istringstream iss(std::string(buffer.begin(), buffer.end()));
-                    result = nif.Load(iss);
-                    spdlog::info("Loaded from BSA/resource: {} ({} bytes)", normalizedPath, buffer.size());
-                } else {
-                    m_lastError = "BSResource returned empty data for: " + normalizedPath;
-                    spdlog::error(m_lastError);
-                    return false;
-                }
-            } else {
-                m_lastError = "File not found and BSResource failed: " + normalizedPath;
-                spdlog::error(m_lastError);
+            if (fileSize == 0) {
+                m_lastError = "Loose file is empty: " + fullPath;
+                spdlog::error("[NIF] {}", m_lastError);
                 return false;
             }
+            
+            result = nif.Load(fullPath);
+            source = "loose";
+            spdlog::info("[NIF] Nifly load from loose file result: {}", result);
+        } else {
+            spdlog::info("[NIF] Trying BSResource for: {}", normalizedPath);
+            
+            auto buffer = ReadBSResourceFully(normalizedPath);
+            
+            if (buffer.empty()) {
+                m_lastError = "Failed to read resource (both loose and BSResource): " + normalizedPath;
+                spdlog::error("[NIF] {}", m_lastError);
+                return false;
+            }
+            
+            spdlog::info("[NIF] Resource read: {} bytes from {}", buffer.size(), normalizedPath);
+            
+            std::string bufferStr(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+            std::istringstream iss(std::move(bufferStr));
+            result = nif.Load(iss);
+            source = "resource";
+            spdlog::info("[NIF] Nifly load from resource result: {}", result);
         }
 
         if (result != 0) {
-            m_lastError = "Failed to parse NIF: " + normalizedPath + " (code " + std::to_string(result) + ")";
-            spdlog::error(m_lastError);
+            m_lastError = "Failed to parse NIF: " + normalizedPath + " (code " + std::to_string(result) + ", source=" + source + ")";
+            spdlog::error("[NIF] {}", m_lastError);
             return false;
         }
+
+        spdlog::info("[NIF] NIF parsed successfully from {}", source);
 
         if (!ExtractGeometry(nif)) {
             if (m_lastError.empty()) {
                 m_lastError = "Failed to extract geometry from NIF";
             }
+            spdlog::error("[NIF] Geometry extraction failed: {}", m_lastError);
             return false;
         }
 
         CalculateBounds();
         m_loaded = true;
 
-        spdlog::info("NIF loaded: {} vertices, {} indices",
-                     m_meshData.vertices.size(), m_meshData.indices.size());
+        spdlog::info("[NIF] Load complete: {} vertices, {} indices, bounds center=({:.2f},{:.2f},{:.2f}), radius={:.2f}",
+                     m_meshData.vertices.size(), m_meshData.indices.size(),
+                     m_meshData.center[0], m_meshData.center[1], m_meshData.center[2],
+                     m_meshData.radius);
         return true;
 
     } catch (const std::exception& e) {
         m_lastError = std::string("Exception loading NIF: ") + e.what();
-        spdlog::error(m_lastError);
+        spdlog::error("[NIF] {}", m_lastError);
         return false;
     }
 }
