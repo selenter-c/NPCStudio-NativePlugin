@@ -1,6 +1,8 @@
 #include "ui/UIManager.h"
 #include "api/PrismUIBridge.h"
 #include "npc/NPCFactory.h"
+#include "nifviewer/NifViewerService.h"
+#include "nifviewer/NifViewerBridge.h"
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -162,6 +164,47 @@ void UIManager::Register() {
             return "error";
         }
     });
+
+    auto& nifViewer = NifViewer::NifViewerService::GetSingleton();
+    if (nifViewer.Initialize()) {
+        auto& nifBridge = NifViewer::NifViewerBridge::GetSingleton();
+        nifBridge.Initialize(&nifViewer);
+        nifBridge.SetViewHandle(m_view);
+
+        bridge.RegisterJSListener(m_view, "nifViewerCommand", [](const std::string& payload) -> std::string {
+            try {
+                auto j = nlohmann::json::parse(payload);
+                std::string command = j.value("command", "");
+                
+                std::string requestId;
+                if (j.contains("requestId")) {
+                    if (j["requestId"].is_number()) {
+                        requestId = std::to_string(j["requestId"].get<int>());
+                    } else {
+                        requestId = j["requestId"].get<std::string>();
+                    }
+                }
+                
+                nlohmann::json cmdPayload;
+                cmdPayload["requestId"] = requestId;
+                if (j.contains("payload")) {
+                    for (auto& [key, value] : j["payload"].items()) {
+                        cmdPayload[key] = value;
+                    }
+                }
+
+                NifViewer::NifViewerBridge::GetSingleton().HandleCommand(command, cmdPayload.dump());
+                return "ok";
+            } catch (const std::exception& e) {
+                spdlog::error("Invalid nifViewerCommand payload: {}", e.what());
+                return "error";
+            }
+        });
+
+        spdlog::info("NIF Viewer integrated into UI");
+    } else {
+        spdlog::warn("NIF Viewer initialization failed - preview will be unavailable");
+    }
 
     spdlog::info("UIManager registered (dashboard hidden, press SHIFT+8 to open)");
 }

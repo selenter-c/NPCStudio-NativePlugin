@@ -39,6 +39,16 @@ include("${commonlibsse_SOURCE_DIR}/cmake/CommonLibSSE.cmake")
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
+# nifly - NIF file parser for Skyrim
+message(STATUS "Fetching nifly...")
+FetchContent_Declare(
+    nifly
+    GIT_REPOSITORY https://github.com/ousnius/nifly.git
+    GIT_TAG main
+)
+set(NIFLY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nifly)
+
 # =============================================================================
 # Source Files
 # =============================================================================
@@ -55,6 +65,12 @@ set(SOURCES
     src/preset/PresetManager.cpp
     src/bio/BioGenerator.cpp
     src/naming/NameDistributor.cpp
+    src/nifviewer/NifViewerService.cpp
+    src/nifviewer/NifModelLoader.cpp
+    src/nifviewer/NifRenderBackend.cpp
+    src/nifviewer/NifRenderTarget.cpp
+    src/nifviewer/NifFrameTransport.cpp
+    src/nifviewer/NifViewerBridge.cpp
 )
 
 # =============================================================================
@@ -82,6 +98,10 @@ target_link_libraries(
     PRIVATE
         spdlog::spdlog
         nlohmann_json::nlohmann_json
+        nifly
+        d3d11.lib
+        dxgi.lib
+        d3dcompiler.lib
 )
 
 target_precompile_headers(
