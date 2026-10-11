@@ -40,6 +40,7 @@ struct MultiMeshData {
 struct NPCAssemblyResult {
     bool success = false;
     std::string errorMessage;
+    std::string errorCode;
     MultiMeshData meshData;
     
     std::string faceGenPath;
@@ -51,6 +52,8 @@ struct NPCAssemblyResult {
     std::string pluginName;
     std::string raceName;
     std::string sexName;
+    bool hasFaceGen = true;
+    bool isCreature = false;
 };
 
 class NPCModelAssembler {
@@ -60,10 +63,11 @@ public:
 
     NPCAssemblyResult AssembleNPC(uint32_t formID);
     
-    static std::string GetFaceGenPath(RE::TESNPC* npc, uint32_t originalFormID);
+    static std::vector<std::string> GetFaceGenCandidates(RE::TESNPC* npc, uint32_t originalFormID);
     static std::string GetBodyPath(RE::TESNPC* npc);
     static std::vector<std::string> GetHeadPartPaths(RE::TESNPC* npc);
     static std::vector<std::string> GetArmorPaths(RE::TESNPC* npc);
+    static bool IsHumanoidWithFaceGen(RE::TESNPC* npc);
 
 private:
     bool LoadAndMergeMesh(const std::string& path, const std::string& name, 

@@ -45,58 +45,49 @@ static std::string ResolveGameDataPath(const std::string& relativePath) {
     return fullPath;
 }
 
-static std::vector<uint8_t> ReadBSResourceFully(const std::string& assetPath) {
+static const char* BSResourceErrorCodeName(RE::BSResource::ErrorCode code) {
+    switch (code) {
+        case RE::BSResource::ErrorCode::kNone: return "kNone";
+        case RE::BSResource::ErrorCode::kNotExist: return "kNotExist";
+        case RE::BSResource::ErrorCode::kInvalidPath: return "kInvalidPath";
+        case RE::BSResource::ErrorCode::kFileError: return "kFileError";
+        case RE::BSResource::ErrorCode::kInvalidType: return "kInvalidType";
+        case RE::BSResource::ErrorCode::kMemoryError: return "kMemoryError";
+        case RE::BSResource::ErrorCode::kBusy: return "kBusy";
+        case RE::BSResource::ErrorCode::kInvalidParam: return "kInvalidParam";
+        case RE::BSResource::ErrorCode::kUnsupported: return "kUnsupported";
+        default: return "unknown";
+    }
+}
+
+static std::vector<uint8_t> ReadFromBSStream(RE::BSResourceNiBinaryStream& stream, const std::string& pathLabel) {
     std::vector<uint8_t> buffer;
     
-    // Try both backslash and forward slash versions
-    std::string pathForward = assetPath;
-    std::replace(pathForward.begin(), pathForward.end(), '\\', '/');
-    
-    spdlog::info("[NIF] Trying BSResource with backslash path: {}", assetPath);
-    RE::BSResourceNiBinaryStream bsStream(assetPath.c_str());
-    
-    if (!bsStream.good() || bsStream.lastError != RE::BSResource::ErrorCode::kNone) {
-        spdlog::warn("[NIF] Backslash path failed, trying forward slash: {}", pathForward);
-        RE::BSResourceNiBinaryStream bsStream2(pathForward.c_str());
-        
-        if (!bsStream2.good() || bsStream2.lastError != RE::BSResource::ErrorCode::kNone) {
-            spdlog::error("[NIF] BSResource failed for both path formats: lastError={}", 
-                          static_cast<int>(bsStream2.lastError));
-            return buffer;
-        }
-        
-        // Use the forward-slash stream
-        std::swap(bsStream.stream, bsStream2.stream);
-        std::swap(bsStream.buffer, bsStream2.buffer);
-        std::swap(bsStream.streamPos, bsStream2.streamPos);
-        std::swap(bsStream.lastError, bsStream2.lastError);
-    }
-    
     RE::NiBinaryStream::BufferInfo info{};
-    bsStream.get_info(info);
-    spdlog::info("[NIF] BSResource BufferInfo: totalSize={}, bufferAllocSize={}, bufferReadSize={}",
-                 info.totalSize, info.bufferAllocSize, info.bufferReadSize);
+    stream.get_info(info);
+    spdlog::info("[NIF] BSResource '{}' BufferInfo: totalSize={}, bufferAllocSize={}, bufferReadSize={}",
+                 pathLabel, info.totalSize, info.bufferAllocSize, info.bufferReadSize);
     
     if (info.totalSize > 0) {
         buffer.resize(info.totalSize);
-        uint32_t posBefore = bsStream.tell();
-        bool readOk = bsStream.read(reinterpret_cast<char*>(buffer.data()), info.totalSize);
-        uint32_t posAfter = bsStream.tell();
+        uint32_t posBefore = stream.tell();
+        bool readOk = stream.read(reinterpret_cast<char*>(buffer.data()), info.totalSize);
+        uint32_t posAfter = stream.tell();
         uint32_t actualRead = posAfter - posBefore;
         
-        spdlog::info("[NIF] BSResource bulk read: requested={}, actual={}, ok={}", 
-                     info.totalSize, actualRead, readOk);
+        spdlog::info("[NIF] BSResource '{}' bulk read: requested={}, actual={}, ok={}", 
+                     pathLabel, info.totalSize, actualRead, readOk);
         
         if (actualRead < info.totalSize) {
             buffer.resize(actualRead);
         }
     } else {
-        spdlog::info("[NIF] BSResource totalSize=0, reading in chunks");
+        spdlog::info("[NIF] BSResource '{}' totalSize=0, reading in chunks", pathLabel);
         char chunk[4096];
-        while (bsStream.good()) {
-            uint32_t posBefore = bsStream.tell();
-            bool fullRead = bsStream.read(chunk, sizeof(chunk));
-            uint32_t posAfter = bsStream.tell();
+        while (stream.good()) {
+            uint32_t posBefore = stream.tell();
+            bool fullRead = stream.read(chunk, sizeof(chunk));
+            uint32_t posAfter = stream.tell();
             uint32_t bytesRead = posAfter - posBefore;
             
             if (bytesRead > 0) {
@@ -107,10 +98,75 @@ static std::vector<uint8_t> ReadBSResourceFully(const std::string& assetPath) {
                 break;
             }
         }
-        spdlog::info("[NIF] BSResource chunked read: {} bytes total", buffer.size());
+        spdlog::info("[NIF] BSResource '{}' chunked read: {} bytes total", pathLabel, buffer.size());
     }
     
     return buffer;
+}
+
+static std::vector<uint8_t> ReadBSResourceFully(const std::string& assetPath) {
+    std::string pathForward = assetPath;
+    std::replace(pathForward.begin(), pathForward.end(), '\\', '/');
+    
+    spdlog::info("[NIF] Trying BSResource with backslash path: {}", assetPath);
+    {
+        RE::BSResourceNiBinaryStream bsStream(assetPath.c_str());
+        spdlog::info("[NIF] BSResource backslash: good={}, lastError={} ({})",
+                     bsStream.good(), static_cast<int>(bsStream.lastError),
+                     BSResourceErrorCodeName(bsStream.lastError));
+        
+        if (bsStream.good() && bsStream.lastError == RE::BSResource::ErrorCode::kNone) {
+            return ReadFromBSStream(bsStream, assetPath);
+        }
+    }
+    
+    spdlog::warn("[NIF] Backslash path failed, trying forward slash: {}", pathForward);
+    {
+        RE::BSResourceNiBinaryStream bsStream2(pathForward.c_str());
+        spdlog::info("[NIF] BSResource forward: good={}, lastError={} ({})",
+                     bsStream2.good(), static_cast<int>(bsStream2.lastError),
+                     BSResourceErrorCodeName(bsStream2.lastError));
+        
+        if (bsStream2.good() && bsStream2.lastError == RE::BSResource::ErrorCode::kNone) {
+            return ReadFromBSStream(bsStream2, pathForward);
+        }
+    }
+    
+    spdlog::error("[NIF] BSResource failed for both path formats of '{}'", assetPath);
+    return {};
+}
+
+static bool s_bsResourceSelfTestDone = false;
+
+static void RunBSResourceSelfTest() {
+    if (s_bsResourceSelfTestDone) return;
+    s_bsResourceSelfTestDone = true;
+    
+    const char* testPaths[] = {
+        "meshes\\actors\\character\\character assets\\malehead.nif",
+        "meshes\\actors\\character\\character assets\\femalehead.nif",
+        "meshes\\clutter\\rubble\\rubble_01.nif"
+    };
+    
+    spdlog::info("[NIF] === BSResource self-test start ===");
+    bool anyOk = false;
+    for (const auto* testPath : testPaths) {
+        auto buf = ReadBSResourceFully(testPath);
+        if (!buf.empty()) {
+            spdlog::info("[NIF] BSResource self-test: OK (bytes={}, path={})", buf.size(), testPath);
+            anyOk = true;
+            break;
+        }
+        spdlog::warn("[NIF] BSResource self-test: FAILED for '{}'", testPath);
+    }
+    
+    if (!anyOk) {
+        spdlog::error("[NIF] BSResource self-test: ALL PATHS FAILED. "
+                      "Possible causes: ABI mismatch between plugin and game, "
+                      "Address Library version mismatch, calling from wrong thread, "
+                      "or game data not fully loaded yet.");
+    }
+    spdlog::info("[NIF] === BSResource self-test end ===");
 }
 
 bool NifModelLoader::LoadFromFile(const std::string& path) {
@@ -128,6 +184,8 @@ bool NifModelLoader::LoadFromFile(const std::string& path) {
         m_lastError = "Path traversal not allowed";
         return false;
     }
+
+    RunBSResourceSelfTest();
 
     std::string fullPath = ResolveGameDataPath(normalizedPath);
     spdlog::info("[NIF] Requested asset: {}", normalizedPath);
@@ -234,6 +292,39 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
             auto& rawVerts = bsTriShape->UpdateRawVertices();
             auto& rawNorms = bsTriShape->UpdateRawNormals();
             auto& rawUvs = bsTriShape->UpdateRawUvs();
+
+            // BSDynamicTriShape may have zero vertices from UpdateRawVertices
+            // if the actual data is in dynamicData. Check for that case.
+            if (rawVerts.empty()) {
+                auto* dynTriShape = dynamic_cast<nifly::BSDynamicTriShape*>(shape);
+                if (dynTriShape && !dynTriShape->dynamicData.empty()) {
+                    spdlog::info("[NIF] BSTriShape '{}' has no raw verts but has dynamicData ({} Vector4 entries), attempting dynamic read",
+                                 shape->name.get(), dynTriShape->dynamicData.size());
+                    
+                    for (size_t i = 0; i < dynTriShape->dynamicData.size(); ++i) {
+                        Vertex v{};
+                        v.x = dynTriShape->dynamicData[i].x;
+                        v.y = dynTriShape->dynamicData[i].y;
+                        v.z = dynTriShape->dynamicData[i].z;
+                        m_meshData.vertices.push_back(v);
+                    }
+                    
+                    std::vector<nifly::Triangle> tris;
+                    bsTriShape->GetTriangles(tris);
+                    for (const auto& tri : tris) {
+                        m_meshData.indices.push_back(baseVertex + tri.p1);
+                        m_meshData.indices.push_back(baseVertex + tri.p2);
+                        m_meshData.indices.push_back(baseVertex + tri.p3);
+                    }
+                    
+                    spdlog::info("[NIF] BSDynamicTriShape '{}': {} verts from dynamicData, {} tris",
+                                 shape->name.get(), dynTriShape->dynamicData.size(), tris.size());
+                    continue;
+                }
+                
+                spdlog::warn("[NIF] BSTriShape '{}' has no vertex data (neither raw nor dynamic)", shape->name.get());
+                continue;
+            }
 
             for (size_t i = 0; i < rawVerts.size(); ++i) {
                 Vertex v{};
@@ -367,6 +458,11 @@ void NifModelLoader::CalculateBounds() {
     m_meshData.radius = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
 
     if (m_meshData.radius < 0.001f) {
+        m_meshData.radius = 1.0f;
+    }
+
+    if (std::isnan(m_meshData.radius) || std::isinf(m_meshData.radius)) {
+        spdlog::warn("[NIF] Bounds radius is NaN/Inf, resetting to 1.0");
         m_meshData.radius = 1.0f;
     }
 

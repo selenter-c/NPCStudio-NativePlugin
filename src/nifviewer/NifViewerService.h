@@ -39,11 +39,17 @@ public:
     std::string RenderFrame();
 
     bool HasModel() const;
-    bool IsInitialized() const { return m_state != ViewerState::Uninitialized; }
+    bool IsInitialized() const { return m_state != ViewerState::Uninitialized && !m_initFailed; }
     std::string GetStateString() const;
     std::string GetLastError() const { return m_lastError; }
+    std::string GetLastErrorCode() const { return m_lastErrorCode; }
 
 private:
+    // After a non-fatal load error (missing FaceGen, bad mesh), the service stays
+    // in Initialized/Ready so subsequent loads are not blocked. Only renderer/transport
+    // init failures set m_initFailed and make the service unusable until Shutdown+Initialize.
+    bool IsServiceReady() const;
+
     NifViewerService() = default;
 
     NifModelLoader m_modelLoader;
@@ -52,9 +58,11 @@ private:
     NifFrameTransport m_transport;
 
     ViewerState m_state = ViewerState::Uninitialized;
+    bool m_initFailed = false;
     bool m_visible = true;
     bool m_dirty = true;
     std::string m_lastError;
+    std::string m_lastErrorCode;
     std::string m_currentModelPath;
     
     float m_currentYaw = 45.0f;

@@ -10,9 +10,21 @@ NifViewerService& NifViewerService::GetSingleton() {
     return instance;
 }
 
+bool NifViewerService::IsServiceReady() const {
+    if (m_initFailed) return false;
+    if (m_state == ViewerState::Uninitialized || m_state == ViewerState::Error) return false;
+    return true;
+}
+
 bool NifViewerService::Initialize() {
-    if (m_state != ViewerState::Uninitialized) {
+    if (m_state == ViewerState::Initialized || m_state == ViewerState::Ready ||
+        m_state == ViewerState::Loading || m_state == ViewerState::Rendering) {
         return true;
+    }
+
+    if (m_initFailed && m_state != ViewerState::Uninitialized) {
+        spdlog::error("[NIF] Initialize refused: previous init failure, state={}", GetStateString());
+        return false;
     }
 
     spdlog::info("Initializing NifViewerService...");
@@ -20,6 +32,7 @@ bool NifViewerService::Initialize() {
     if (!m_renderer.Initialize()) {
         m_lastError = "Failed to initialize renderer";
         m_state = ViewerState::Error;
+        m_initFailed = true;
         spdlog::error(m_lastError);
         return false;
     }
@@ -27,11 +40,13 @@ bool NifViewerService::Initialize() {
     if (!m_transport.Initialize(m_renderer.GetDevice())) {
         m_lastError = "Failed to initialize frame transport";
         m_state = ViewerState::Error;
+        m_initFailed = true;
         spdlog::error(m_lastError);
         return false;
     }
 
     m_state = ViewerState::Initialized;
+    m_initFailed = false;
     spdlog::info("NifViewerService initialized successfully");
     return true;
 }
@@ -44,17 +59,22 @@ void NifViewerService::Shutdown() {
     m_renderer.Shutdown();
 
     m_state = ViewerState::Uninitialized;
+    m_initFailed = false;
     m_visible = true;
     m_dirty = true;
     m_lastError.clear();
+    m_lastErrorCode.clear();
     m_currentModelPath.clear();
 
     spdlog::info("NifViewerService shutdown complete");
 }
 
 bool NifViewerService::LoadModel(const std::string& assetPath, uint32_t width, uint32_t height) {
-    if (m_state == ViewerState::Uninitialized || m_state == ViewerState::Error) {
-        m_lastError = "Service not initialized";
+    spdlog::info("[NIF] LoadModel entered, state={}, path={}", GetStateString(), assetPath);
+
+    if (!IsServiceReady()) {
+        m_lastError = "Service not ready (state=" + GetStateString() + ", initFailed=" + std::to_string(m_initFailed) + ")";
+        spdlog::error("[NIF] LoadModel refused: {}", m_lastError);
         return false;
     }
 
@@ -64,6 +84,8 @@ bool NifViewerService::LoadModel(const std::string& assetPath, uint32_t width, u
 
     m_state = ViewerState::Loading;
     m_currentModelPath = assetPath;
+    m_lastError.clear();
+    m_lastErrorCode.clear();
 
     spdlog::info("Loading model: {} ({}x{})", assetPath, width, height);
 
@@ -71,15 +93,15 @@ bool NifViewerService::LoadModel(const std::string& assetPath, uint32_t width, u
 
     if (!m_modelLoader.LoadFromFile(assetPath)) {
         m_lastError = m_modelLoader.GetLastError();
-        m_state = ViewerState::Error;
-        spdlog::error("Failed to load model: {}", m_lastError);
+        m_state = ViewerState::Initialized;
+        spdlog::error("[NIF] Failed to load model '{}': {}", assetPath, m_lastError);
         return false;
     }
 
     if (!m_renderer.SetModel(m_modelLoader.GetMeshData())) {
         m_lastError = "Failed to upload model to GPU";
-        m_state = ViewerState::Error;
-        spdlog::error(m_lastError);
+        m_state = ViewerState::Initialized;
+        spdlog::error("[NIF] {}", m_lastError);
         return false;
     }
 
@@ -103,8 +125,11 @@ bool NifViewerService::LoadModel(const std::string& assetPath, uint32_t width, u
 }
 
 bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height) {
-    if (m_state == ViewerState::Uninitialized || m_state == ViewerState::Error) {
-        m_lastError = "Service not initialized";
+    spdlog::info("[NPC] LoadNPC entered, state={}, formID={:08X}", GetStateString(), formID);
+
+    if (!IsServiceReady()) {
+        m_lastError = "Service not ready (state=" + GetStateString() + ", initFailed=" + std::to_string(m_initFailed) + ")";
+        spdlog::error("[NPC] LoadNPC refused: {}", m_lastError);
         return false;
     }
 
@@ -113,9 +138,13 @@ bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height)
     height = std::clamp(height, config.minHeight, config.maxHeight);
 
     m_state = ViewerState::Loading;
+    m_lastError.clear();
+    m_lastErrorCode.clear();
 
     spdlog::info("[NPC] Loading NPC preview for formID={:08X} ({}x{})", formID, width, height);
 
+    // Clear previous model before assembling new one. If assembly fails the service
+    // stays in Initialized with no model — UI receives the error and can try another NPC.
     m_modelLoader.Unload();
     m_renderer.ClearModel();
 
@@ -123,8 +152,9 @@ bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height)
 
     if (!assemblyResult.success) {
         m_lastError = assemblyResult.errorMessage;
-        m_state = ViewerState::Error;
-        spdlog::error("[NPC] Assembly failed: {}", m_lastError);
+        m_lastErrorCode = assemblyResult.errorCode;
+        m_state = ViewerState::Initialized;
+        spdlog::error("[NPC] Assembly failed for formID={:08X}: {} (code={})", formID, m_lastError, m_lastErrorCode);
         return false;
     }
 
@@ -156,7 +186,14 @@ bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height)
             combinedMesh.vertices.push_back(tv);
         }
         
+        // SubMesh indices are LOCAL (relative to that submesh's vertices).
+        // Apply baseVertex offset exactly once here during merge.
         for (auto idx : subMesh.indices) {
+            if (idx >= subMesh.vertices.size()) {
+                spdlog::warn("[NPC] Index out of range in submesh '{}': idx={}, verts={}, skipping triangle vertex",
+                             subMesh.name, idx, subMesh.vertices.size());
+                continue;
+            }
             combinedMesh.indices.push_back(static_cast<uint32_t>(baseVertex) + idx);
         }
     }
@@ -174,7 +211,7 @@ bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height)
 
     if (!m_renderer.SetModel(combinedMesh)) {
         m_lastError = "Failed to upload assembled model to GPU";
-        m_state = ViewerState::Error;
+        m_state = ViewerState::Initialized;
         spdlog::error("[NPC] {}", m_lastError);
         return false;
     }

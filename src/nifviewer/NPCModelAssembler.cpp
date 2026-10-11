@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
+#include <cstring>
 
 namespace NPCStudio::NifViewer {
 
@@ -21,31 +23,67 @@ std::string NPCModelAssembler::GetPluginFolderName(RE::TESFile* file) {
 
 uint32_t NPCModelAssembler::GetLocalFormIDForFaceGen(RE::TESForm* form) {
     if (!form) return 0;
-    return form->GetFormID() & 0x00FFFFFF;
+    return form->GetLocalFormID();
 }
 
-std::string NPCModelAssembler::GetFaceGenPath(RE::TESNPC* npc, uint32_t originalFormID) {
-    if (!npc) return "";
+bool NPCModelAssembler::IsHumanoidWithFaceGen(RE::TESNPC* npc) {
+    if (!npc) return false;
     
-    // Use the ORIGINAL NPC's defining file, NOT GetRootFaceNPC()
-    // GetRootFaceNPC returns the template NPC which may be in a different plugin
-    // FaceGen files are stored under the plugin that DEFINES the NPC record
-    auto* definingFile = npc->GetFile();
-    std::string pluginFilename = definingFile ? std::string(definingFile->GetFilename()) : "Skyrim.esm";
+    auto* race = npc->GetRace();
+    if (!race) return false;
     
-    // Use the ORIGINAL formID passed from JS for localFormID
-    uint32_t localFormID = originalFormID & 0x00FFFFFF;
+    bool hasFaceGenFlag = race->data.flags.any(RE::RACE_DATA::Flag::kFaceGenHead);
     
-    spdlog::info("[NPC] FaceGen debug: originalFormID={:08X}, localFormID={:08X}, plugin={}, npc_formID={:08X}", 
-                 originalFormID, localFormID, pluginFilename, npc->GetFormID());
+    bool hasFaceHeadParts = false;
+    for (int8_t i = 0; i < npc->numHeadParts && !hasFaceHeadParts; ++i) {
+        auto* hp = npc->headParts[i];
+        if (hp && hp->type.get() == RE::BGSHeadPart::HeadPartType::kFace) {
+            hasFaceHeadParts = true;
+        }
+    }
     
-    char path[512];
-    snprintf(path, sizeof(path),
-             "meshes\\actors\\character\\facegendata\\facegeom\\%s\\%08X.nif",
-             pluginFilename.c_str(),
-             static_cast<unsigned int>(localFormID));
+    return hasFaceGenFlag || hasFaceHeadParts;
+}
+
+std::vector<std::string> NPCModelAssembler::GetFaceGenCandidates(RE::TESNPC* npc, uint32_t originalFormID) {
+    std::vector<std::string> candidates;
+    if (!npc) return candidates;
     
-    return std::string(path);
+    auto addCandidatesForForm = [&](RE::TESNPC* targetNPC) {
+        if (!targetNPC) return;
+        
+        const auto& sourceFiles = targetNPC->sourceFiles;
+        if (!sourceFiles.array || sourceFiles.array->empty()) return;
+        
+        uint32_t localFormID = GetLocalFormIDForFaceGen(targetNPC);
+        
+        // Iterate from last override to first (most likely to least likely)
+        for (int i = static_cast<int>(sourceFiles.array->size()) - 1; i >= 0; --i) {
+            auto* file = (*sourceFiles.array)[i];
+            if (!file) continue;
+            
+            std::string pluginFilename(file->GetFilename());
+            if (pluginFilename.empty()) continue;
+            
+            char path[512];
+            snprintf(path, sizeof(path),
+                     "meshes\\actors\\character\\facegendata\\facegeom\\%s\\%08X.nif",
+                     pluginFilename.c_str(),
+                     static_cast<unsigned int>(localFormID));
+            
+            candidates.push_back(std::string(path));
+        }
+    };
+    
+    addCandidatesForForm(npc);
+    
+    auto* rootFaceNPC = npc->GetRootFaceNPC();
+    if (rootFaceNPC && rootFaceNPC != npc) {
+        spdlog::info("[NPC] Root face NPC differs (formID={:08X}), adding its candidates", rootFaceNPC->GetFormID());
+        addCandidatesForForm(rootFaceNPC);
+    }
+    
+    return candidates;
 }
 
 std::string NPCModelAssembler::GetBodyPath(RE::TESNPC* npc) {
@@ -124,19 +162,9 @@ bool NPCModelAssembler::LoadAndMergeMesh(const std::string& path, const std::str
         std::copy(transform, transform + 16, subMesh.transform);
     }
     
-    uint32_t baseVertex = 0;
-    if (!result.subMeshes.empty()) {
-        for (const auto& existing : result.subMeshes) {
-            baseVertex += static_cast<uint32_t>(existing.vertices.size());
-        }
-    }
-    
+    // Store LOCAL indices — baseVertex offset is applied once during merge in LoadNPC.
     subMesh.vertices = meshData.vertices;
-    
-    subMesh.indices.reserve(meshData.indices.size());
-    for (auto idx : meshData.indices) {
-        subMesh.indices.push_back(baseVertex + idx);
-    }
+    subMesh.indices = meshData.indices;
     
     spdlog::info("[NPC] Merged mesh '{}': {} verts, {} indices", 
                 name, subMesh.vertices.size(), subMesh.indices.size());
@@ -207,6 +235,7 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     auto* form = RE::TESForm::LookupByID(formID);
     if (!form) {
         result.errorMessage = "Form not found for FormID: " + std::to_string(formID);
+        result.errorCode = "FORM_NOT_FOUND";
         spdlog::error("[NPC] {}", result.errorMessage);
         return result;
     }
@@ -214,6 +243,7 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     auto* npc = form->As<RE::TESNPC>();
     if (!npc) {
         result.errorMessage = "Form is not an NPC";
+        result.errorCode = "NOT_AN_NPC";
         spdlog::error("[NPC] {}", result.errorMessage);
         return result;
     }
@@ -227,15 +257,47 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     auto* definingFile = npc->GetFile();
     result.pluginName = GetPluginFolderName(definingFile);
     
-    spdlog::info("[NPC] Assembling NPC: formID={:08X}, race={}, sex={}, plugin={}",
-                formID, result.raceName, result.sexName, result.pluginName);
+    result.isCreature = !IsHumanoidWithFaceGen(npc);
+    result.hasFaceGen = !result.isCreature;
     
-    result.faceGenPath = GetFaceGenPath(npc, formID);
-    spdlog::info("[NPC] FaceGen path: {}", result.faceGenPath);
+    spdlog::info("[NPC] Assembling NPC: formID={:08X}, race={}, sex={}, plugin={}, isCreature={}, hasFaceGen={}",
+                formID, result.raceName, result.sexName, result.pluginName, result.isCreature, result.hasFaceGen);
     
-    bool hasFaceGen = LoadAndMergeMesh(result.faceGenPath, "FaceGen", result.meshData);
-    if (!hasFaceGen) {
-        result.errorMessage = "Failed to load FaceGen mesh: " + result.faceGenPath;
+    if (result.isCreature) {
+        result.errorMessage = "Creature/animal: no FaceGen preview available (race=" + result.raceName + ")";
+        result.errorCode = "NO_FACEGEN_CREATURE";
+        result.success = false;
+        spdlog::info("[NPC] {}", result.errorMessage);
+        return result;
+    }
+    
+    auto candidates = GetFaceGenCandidates(npc, formID);
+    spdlog::info("[NPC] FaceGen candidates ({} total):", candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        spdlog::info("[NPC]   #{}: {}", i, candidates[i]);
+    }
+    
+    bool faceGenLoaded = false;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        spdlog::info("[NPC] Trying FaceGen candidate #{}: {}", i, candidates[i]);
+        if (LoadAndMergeMesh(candidates[i], "FaceGen", result.meshData)) {
+            result.faceGenPath = candidates[i];
+            faceGenLoaded = true;
+            spdlog::info("[NPC] FaceGen candidate #{} loaded successfully", i);
+            break;
+        }
+        spdlog::warn("[NPC] FaceGen candidate #{} not found or failed: {}", i, candidates[i]);
+    }
+    
+    if (!faceGenLoaded) {
+        std::string triedPaths;
+        for (const auto& c : candidates) {
+            if (!triedPaths.empty()) triedPaths += ", ";
+            triedPaths += c;
+        }
+        result.errorMessage = "FaceGen not found for any candidate: " + triedPaths;
+        result.errorCode = "FACEGEN_NOT_FOUND";
+        result.success = false;
         spdlog::error("[NPC] {}", result.errorMessage);
         return result;
     }
@@ -281,6 +343,7 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
                                    size_t(0), [](size_t sum, const SubMesh& sm) { return sum + sm.indices.size(); }));
     } else {
         result.errorMessage = "No geometry assembled";
+        result.errorCode = "MESH_PARSE_FAILED";
         spdlog::error("[NPC] {}", result.errorMessage);
     }
     

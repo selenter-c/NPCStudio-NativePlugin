@@ -1,5 +1,6 @@
 #include "nifviewer/NifViewerBridge.h"
 #include "nifviewer/NifViewerService.h"
+#include "nifviewer/NPCModelAssembler.h"
 #include "api/PrismUIBridge.h"
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -317,6 +318,9 @@ void NifViewerBridge::HandleLoadNPC(const std::string& requestId, const std::str
         response["success"] = success;
         response["formID"] = formID;
 
+        response["hasFaceGen"] = true;
+        response["isCreature"] = false;
+
         if (success) {
             std::string frameData = m_service->RenderFrame();
             if (!frameData.empty()) {
@@ -325,6 +329,8 @@ void NifViewerBridge::HandleLoadNPC(const std::string& requestId, const std::str
             }
         } else {
             response["error"] = m_service->GetLastError();
+            std::string ec = m_service->GetLastErrorCode();
+            response["errorCode"] = ec.empty() ? "LOAD_FAILED" : ec;
         }
 
         SendResponse("npcLoaded", response.dump());
@@ -363,28 +369,28 @@ void NifViewerBridge::HandleGetNPCMeshPath(const std::string& requestId, const s
         }
 
         // Use the ORIGINAL NPC's defining file, NOT GetRootFaceNPC()
+        bool isCreature = !NPCModelAssembler::IsHumanoidWithFaceGen(npc);
+        auto candidates = NPCModelAssembler::GetFaceGenCandidates(npc, formID);
+        
+        std::string meshPath = candidates.empty() ? "" : candidates[0];
         auto* definingFile = npc->GetFile();
         std::string pluginFilename = GetPluginFilenameWithExt(definingFile);
-        uint32_t localFormID = formID & 0x00FFFFFF;
+        uint32_t localFormID = npc->GetLocalFormID();
         
-        char faceGenPath[512];
-        snprintf(faceGenPath, sizeof(faceGenPath),
-                 "meshes\\actors\\character\\facegendata\\facegeom\\%s\\%08X.nif",
-                 pluginFilename.c_str(),
-                 static_cast<unsigned int>(localFormID));
-
-        std::string meshPath = faceGenPath;
-        spdlog::info("[NPC] Resolved FaceGen path: {} (formID={:08X}, plugin={}, localID={:08X})", 
-                     meshPath, formID, pluginFilename, localFormID);
+        spdlog::info("[NPC] Resolved FaceGen path: {} (formID={:08X}, plugin={}, localID={:08X}, isCreature={}, candidates={})", 
+                     meshPath, formID, pluginFilename, localFormID, isCreature, candidates.size());
 
         json response;
         response["event"] = "npcMeshPath";
         response["requestId"] = requestId;
-        response["success"] = true;
+        response["success"] = !meshPath.empty();
         response["meshPath"] = meshPath;
         response["formID"] = formID;
         response["pluginName"] = pluginFilename;
         response["localFormID"] = localFormID;
+        response["isCreature"] = isCreature;
+        response["hasFaceGen"] = !isCreature;
+        response["candidateCount"] = candidates.size();
 
         SendResponse("npcMeshPath", response.dump());
 
