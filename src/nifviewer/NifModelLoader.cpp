@@ -16,6 +16,26 @@ NifModelLoader::~NifModelLoader() {
     Unload();
 }
 
+static std::string NormalizeMeshPath(const std::string& path) {
+    if (path.empty()) return path;
+    
+    std::string result = path;
+    std::replace(result.begin(), result.end(), '/', '\\');
+    
+    while (!result.empty() && (result[0] == '\\' || result[0] == '/')) {
+        result.erase(0, 1);
+    }
+    
+    std::string lower = result;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    
+    if (lower.substr(0, 7) != "meshes\\") {
+        result = "meshes\\" + result;
+    }
+    
+    return result;
+}
+
 static std::string ResolveGameDataPath(const std::string& relativePath) {
     auto dataPath = RE::GetINISetting("sGameDataPath:General");
     std::string basePath;
@@ -177,8 +197,7 @@ bool NifModelLoader::LoadFromFile(const std::string& path) {
         return false;
     }
 
-    std::string normalizedPath = path;
-    std::replace(normalizedPath.begin(), normalizedPath.end(), '/', '\\');
+    std::string normalizedPath = NormalizeMeshPath(path);
 
     if (normalizedPath.find("..") != std::string::npos) {
         m_lastError = "Path traversal not allowed";
@@ -188,7 +207,7 @@ bool NifModelLoader::LoadFromFile(const std::string& path) {
     RunBSResourceSelfTest();
 
     std::string fullPath = ResolveGameDataPath(normalizedPath);
-    spdlog::info("[NIF] Requested asset: {}", normalizedPath);
+    spdlog::info("[NIF] Requested asset: {} -> normalized: {}", path, normalizedPath);
     spdlog::info("[NIF] Resolved full path: {}", fullPath);
 
     try {
@@ -280,12 +299,16 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
         return false;
     }
 
-    spdlog::info("Found {} shapes in NIF", shapes.size());
+    spdlog::info("[NIF] Found {} shapes in NIF", shapes.size());
 
-    for (auto* shape : shapes) {
+    for (size_t shapeIdx = 0; shapeIdx < shapes.size(); ++shapeIdx) {
+        auto* shape = shapes[shapeIdx];
         if (!shape) continue;
 
+        std::string shapeName = shape->name.get();
+        
         uint32_t baseVertex = static_cast<uint32_t>(m_meshData.vertices.size());
+        size_t vertsBefore = m_meshData.vertices.size();
 
         auto* bsTriShape = dynamic_cast<nifly::BSTriShape*>(shape);
         if (bsTriShape) {
@@ -359,8 +382,9 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
                 m_meshData.indices.push_back(baseVertex + tri.p3);
             }
 
-            spdlog::debug("BSTriShape '{}': {} verts, {} tris",
-                          shape->name.get(), rawVerts.size(), tris.size());
+            size_t vertsAdded = m_meshData.vertices.size() - vertsBefore;
+            spdlog::info("[NIF] Shape[{}] '{}': type=BSTriShape, verts={}, tris={}", 
+                         shapeIdx, shapeName, vertsAdded, tris.size());
             continue;
         }
 
@@ -408,9 +432,13 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
             m_meshData.indices.push_back(baseVertex + tri.p3);
         }
 
-        spdlog::debug("NiShape '{}': {} verts, {} tris",
-                      shape->name.get(), verts.size(), tris.size());
+        size_t vertsAdded = m_meshData.vertices.size() - vertsBefore;
+        spdlog::info("[NIF] Shape[{}] '{}': type=NiShape, verts={}, tris={}", 
+                     shapeIdx, shapeName, vertsAdded, tris.size());
     }
+
+    spdlog::info("[NIF] ExtractGeometry complete: {} total verts, {} total indices", 
+                 m_meshData.vertices.size(), m_meshData.indices.size());
 
     if (m_meshData.vertices.empty()) {
         m_lastError = "No vertex data extracted";

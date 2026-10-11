@@ -2,6 +2,7 @@
 #include "nifviewer/NifViewerConfig.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <fstream>
 
 namespace NPCStudio::NifViewer {
 
@@ -105,22 +106,28 @@ bool NifViewerService::LoadModel(const std::string& assetPath, uint32_t width, u
         return false;
     }
 
+    m_currentMesh = m_modelLoader.GetMeshData();
+    m_hasCurrentMesh = true;
+
     m_renderer.GetRenderTarget().Resize(m_renderer.GetDevice(), width, height);
 
-    const auto& mesh = m_modelLoader.GetMeshData();
-    m_currentYaw = 45.0f;
-    m_currentPitch = -15.0f;
-    m_currentDistance = mesh.radius * 2.5f;
+    m_currentYaw = 0.0f;
+    m_currentPitch = 10.0f;
+    m_currentDistance = m_currentMesh.radius * 2.5f;
     if (m_currentDistance < 0.5f) m_currentDistance = 3.0f;
     
-    spdlog::info("Camera set: yaw={}, pitch={}, dist={}, target=({:.2f}, {:.2f}, {:.2f})",
+    m_renderer.SetCamera(m_currentYaw, m_currentPitch, m_currentDistance);
+    m_renderer.SetTarget(m_currentMesh.center[0], m_currentMesh.center[1], m_currentMesh.center[2]);
+    
+    spdlog::info("[NIF] Camera set: yaw={}, pitch={}, dist={}, target=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}",
                  m_currentYaw, m_currentPitch, m_currentDistance,
-                 mesh.center[0], mesh.center[1], mesh.center[2]);
+                 m_currentMesh.center[0], m_currentMesh.center[1], m_currentMesh.center[2],
+                 m_currentMesh.radius);
 
     m_state = ViewerState::Ready;
     m_dirty = true;
 
-    spdlog::info("Model loaded successfully: {}", assetPath);
+    spdlog::info("[NIF] Model loaded successfully: {}", assetPath);
     return true;
 }
 
@@ -216,29 +223,39 @@ bool NifViewerService::LoadNPC(uint32_t formID, uint32_t width, uint32_t height)
         return false;
     }
 
+    m_currentMesh = combinedMesh;
+    m_hasCurrentMesh = true;
+
     m_renderer.GetRenderTarget().Resize(m_renderer.GetDevice(), width, height);
 
-    m_currentYaw = 45.0f;
-    m_currentPitch = -15.0f;
+    m_currentYaw = 0.0f;
+    m_currentPitch = 10.0f;
     m_currentDistance = combinedMesh.radius * 2.5f;
     if (m_currentDistance < 0.5f) m_currentDistance = 3.0f;
 
-    spdlog::info("[NPC] Camera set: yaw={}, pitch={}, dist={}, target=({:.2f}, {:.2f}, {:.2f})",
+    m_renderer.SetCamera(m_currentYaw, m_currentPitch, m_currentDistance);
+    m_renderer.SetTarget(combinedMesh.center[0], combinedMesh.center[1], combinedMesh.center[2]);
+
+    spdlog::info("[NPC] Camera set: yaw={}, pitch={}, dist={}, target=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}",
                  m_currentYaw, m_currentPitch, m_currentDistance,
-                 combinedMesh.center[0], combinedMesh.center[1], combinedMesh.center[2]);
+                 combinedMesh.center[0], combinedMesh.center[1], combinedMesh.center[2],
+                 combinedMesh.radius);
 
     m_state = ViewerState::Ready;
     m_dirty = true;
     m_currentModelPath = "NPC:" + std::to_string(formID);
 
-    spdlog::info("[NPC] Preview loaded: {} sub-meshes, {} vertices, {} indices",
-                multiMesh.subMeshes.size(), combinedMesh.vertices.size(), combinedMesh.indices.size());
+    spdlog::info("[NPC] Preview loaded: {} sub-meshes, {} vertices, {} indices, bounds center=({:.2f},{:.2f},{:.2f}), radius={:.2f}",
+                multiMesh.subMeshes.size(), combinedMesh.vertices.size(), combinedMesh.indices.size(),
+                combinedMesh.center[0], combinedMesh.center[1], combinedMesh.center[2], combinedMesh.radius);
     return true;
 }
 
 void NifViewerService::UnloadModel() {
     m_renderer.ClearModel();
     m_modelLoader.Unload();
+    m_currentMesh = MeshData{};
+    m_hasCurrentMesh = false;
     m_currentModelPath.clear();
     m_dirty = true;
 
@@ -269,15 +286,20 @@ void NifViewerService::Zoom(float delta) {
 }
 
 void NifViewerService::ResetCamera() {
-    if (!HasModel()) return;
+    if (!HasModel() || !m_hasCurrentMesh) return;
 
-    m_renderer.AutoFrameModel(m_modelLoader.GetMeshData());
-    
-    const auto& mesh = m_modelLoader.GetMeshData();
-    m_currentYaw = 45.0f;
-    m_currentPitch = -15.0f;
-    m_currentDistance = mesh.radius * 2.5f;
+    m_currentYaw = 0.0f;
+    m_currentPitch = 10.0f;
+    m_currentDistance = m_currentMesh.radius * 2.5f;
     if (m_currentDistance < 0.5f) m_currentDistance = 3.0f;
+    
+    m_renderer.SetCamera(m_currentYaw, m_currentPitch, m_currentDistance);
+    m_renderer.SetTarget(m_currentMesh.center[0], m_currentMesh.center[1], m_currentMesh.center[2]);
+    
+    spdlog::info("[RENDER] ResetCamera: yaw={}, pitch={}, dist={}, target=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}",
+                 m_currentYaw, m_currentPitch, m_currentDistance,
+                 m_currentMesh.center[0], m_currentMesh.center[1], m_currentMesh.center[2],
+                 m_currentMesh.radius);
     
     m_dirty = true;
 }
@@ -301,29 +323,42 @@ void NifViewerService::SetVisible(bool visible) {
 }
 
 std::string NifViewerService::RenderFrame() {
-    if (!m_visible || !HasModel() || m_state == ViewerState::Uninitialized) {
-        spdlog::debug("RenderFrame skipped: visible={}, hasModel={}, state={}", 
-                      m_visible, HasModel(), GetStateString());
+    if (!m_visible) {
+        spdlog::info("[RENDER] RenderFrame skipped: not visible");
+        return "";
+    }
+    if (!HasModel()) {
+        spdlog::info("[RENDER] RenderFrame skipped: no model (renderer.hasModel={}, m_hasCurrentMesh={})", 
+                     m_renderer.HasModel(), m_hasCurrentMesh);
+        return "";
+    }
+    if (m_state == ViewerState::Uninitialized) {
+        spdlog::info("[RENDER] RenderFrame skipped: state={}", GetStateString());
         return "";
     }
 
     if (!m_dirty) {
-        spdlog::debug("RenderFrame skipped: not dirty");
         return "";
     }
 
     m_state = ViewerState::Rendering;
 
-    spdlog::info("Rendering frame...");
+    spdlog::info("[RENDER] Rendering frame...");
     if (!m_renderer.Render()) {
-        spdlog::warn("Render failed");
+        spdlog::warn("[RENDER] Render() returned false");
         m_state = ViewerState::Ready;
         return "";
     }
 
-    spdlog::info("Capturing frame as base64...");
+    spdlog::info("[RENDER] Capturing frame as base64...");
     std::string base64 = m_transport.CaptureFrameAsBase64(m_renderer.GetRenderTarget().GetColorTexture());
-    spdlog::info("Frame captured: {} bytes", base64.size());
+    spdlog::info("[RENDER] Frame captured: {} bytes", base64.size());
+
+    if (m_debugRender && !base64.empty()) {
+        auto& rt = m_renderer.GetRenderTarget();
+        spdlog::info("[RENDER] Debug: render target {}x{}, staging texture exists", 
+                     rt.GetWidth(), rt.GetHeight());
+    }
 
     m_dirty = false;
     m_state = ViewerState::Ready;
@@ -332,7 +367,7 @@ std::string NifViewerService::RenderFrame() {
 }
 
 bool NifViewerService::HasModel() const {
-    return m_renderer.HasModel() && m_modelLoader.IsLoaded();
+    return m_renderer.HasModel();
 }
 
 std::string NifViewerService::GetStateString() const {

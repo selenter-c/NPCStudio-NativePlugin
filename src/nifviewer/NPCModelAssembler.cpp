@@ -305,7 +305,6 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     result.bodyPath = GetBodyPath(npc);
     if (!result.bodyPath.empty()) {
         spdlog::info("[NPC] Body path: {}", result.bodyPath);
-        LoadAndMergeMesh(result.bodyPath, "Body", result.meshData);
     } else {
         spdlog::warn("[NPC] No body path found for race={}", result.raceName);
     }
@@ -313,11 +312,19 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     result.headPartPaths = GetHeadPartPaths(npc);
     spdlog::info("[NPC] Found {} head parts", result.headPartPaths.size());
     
-    int headPartIndex = 0;
-    for (const auto& hpPath : result.headPartPaths) {
-        std::string partName = "HeadPart_" + std::to_string(headPartIndex);
-        LoadAndMergeMesh(hpPath, partName, result.meshData);
-        ++headPartIndex;
+    if (faceGenLoaded) {
+        spdlog::info("[NPC] FaceGen loaded - skipping separate head parts to avoid duplicate geometry");
+        for (size_t i = 0; i < result.headPartPaths.size(); ++i) {
+            spdlog::info("[NPC]   Skipped head part #{}: {}", i, result.headPartPaths[i]);
+        }
+    } else {
+        spdlog::info("[NPC] No FaceGen - loading head parts as fallback");
+        int headPartIndex = 0;
+        for (const auto& hpPath : result.headPartPaths) {
+            std::string partName = "HeadPart_" + std::to_string(headPartIndex);
+            LoadAndMergeMesh(hpPath, partName, result.meshData);
+            ++headPartIndex;
+        }
     }
     
     result.armorPaths = GetArmorPaths(npc);

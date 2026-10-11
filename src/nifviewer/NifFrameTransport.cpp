@@ -115,7 +115,6 @@ static void stbi_write_callback(void* context, void* data, int size) {
 }
 
 std::string NifFrameTransport::EncodePNG(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t rowPitch) {
-    // Convert BGRA to RGBA
     std::vector<uint8_t> rgba(width * height * 4);
 
     for (uint32_t y = 0; y < height; ++y) {
@@ -123,15 +122,10 @@ std::string NifFrameTransport::EncodePNG(const uint8_t* pixels, uint32_t width, 
         uint8_t* dstRow = rgba.data() + y * width * 4;
         
         for (uint32_t x = 0; x < width; ++x) {
-            uint8_t b = srcRow[x * 4 + 0];
-            uint8_t g = srcRow[x * 4 + 1];
-            uint8_t r = srcRow[x * 4 + 2];
-            uint8_t a = srcRow[x * 4 + 3];
-            
-            dstRow[x * 4 + 0] = r;
-            dstRow[x * 4 + 1] = g;
-            dstRow[x * 4 + 2] = b;
-            dstRow[x * 4 + 3] = a;
+            dstRow[x * 4 + 0] = srcRow[x * 4 + 0];
+            dstRow[x * 4 + 1] = srcRow[x * 4 + 1];
+            dstRow[x * 4 + 2] = srcRow[x * 4 + 2];
+            dstRow[x * 4 + 3] = srcRow[x * 4 + 3];
         }
     }
 
@@ -175,12 +169,13 @@ std::string NifFrameTransport::Base64Encode(const uint8_t* data, size_t length) 
 
     if (i < length) {
         uint32_t octet_a = data[i++];
-        uint32_t octet_b = (i < length) ? data[i++] : 0;
+        bool hasB = (i < length);
+        uint32_t octet_b = hasB ? data[i++] : 0;
         uint32_t triple = (octet_a << 16) | (octet_b << 8);
 
         result += base64Chars[(triple >> 18) & 0x3F];
         result += base64Chars[(triple >> 12) & 0x3F];
-        result += (i - 1 < length) ? base64Chars[(triple >> 6) & 0x3F] : '=';
+        result += hasB ? base64Chars[(triple >> 6) & 0x3F] : '=';
         result += '=';
     }
 

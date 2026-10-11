@@ -297,8 +297,8 @@ void NifRenderBackend::AutoFrameModel(const MeshData& mesh) {
     float dist = mesh.radius * 2.5f;
     if (dist < 0.5f) dist = 3.0f;
     m_camera.distance = dist;
-    m_camera.yaw = 45.0f;
-    m_camera.pitch = -15.0f;
+    m_camera.yaw = 0.0f;
+    m_camera.pitch = 10.0f;
 }
 
 bool NifRenderBackend::Render() {
@@ -318,7 +318,7 @@ bool NifRenderBackend::Render() {
     vp.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &vp);
 
-    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float clearColor[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
     m_context->ClearRenderTargetView(m_renderTarget.GetRTV(), clearColor);
     m_context->ClearDepthStencilView(m_renderTarget.GetDSV(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
@@ -349,9 +349,12 @@ void NifRenderBackend::UpdateConstantBuffer() {
     float pitchRad = XMConvertToRadians(m_camera.pitch);
     float yawRad = XMConvertToRadians(m_camera.yaw);
 
+    // Skyrim coordinate system: Z-up, forward=+Y
+    // Camera orbits around target with yaw controlling horizontal rotation
+    // At yaw=0, camera looks from +Y toward origin (face-on for typical head orientation)
     float cx = cosf(pitchRad) * sinf(yawRad);
-    float cy = sinf(pitchRad);
-    float cz = cosf(pitchRad) * cosf(yawRad);
+    float cy = cosf(pitchRad) * cosf(yawRad);
+    float cz = sinf(pitchRad);
 
     XMVECTOR eyePos = XMVectorSet(
         m_camera.targetX + cx * m_camera.distance,
@@ -361,7 +364,7 @@ void NifRenderBackend::UpdateConstantBuffer() {
     );
 
     XMVECTOR target = XMVectorSet(m_camera.targetX, m_camera.targetY, m_camera.targetZ, 1.0f);
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMVECTOR up = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
 
     XMMATRIX view = XMMatrixLookAtLH(eyePos, target, up);
 

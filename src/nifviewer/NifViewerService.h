@@ -65,9 +65,14 @@ private:
     std::string m_lastErrorCode;
     std::string m_currentModelPath;
     
-    float m_currentYaw = 45.0f;
-    float m_currentPitch = -15.0f;
+    MeshData m_currentMesh;
+    bool m_hasCurrentMesh = false;
+    
+    float m_currentYaw = 0.0f;
+    float m_currentPitch = 10.0f;
     float m_currentDistance = 3.0f;
+    
+    bool m_debugRender = false;
 };
 
 }

@@ -318,14 +318,14 @@ void NifViewerBridge::HandleLoadNPC(const std::string& requestId, const std::str
         response["success"] = success;
         response["formID"] = formID;
 
-        response["hasFaceGen"] = true;
-        response["isCreature"] = false;
-
         if (success) {
             std::string frameData = m_service->RenderFrame();
+            spdlog::info("[NPC] RenderFrame after LoadNPC returned {} bytes", frameData.size());
             if (!frameData.empty()) {
                 response["frameData"] = frameData;
                 spdlog::info("[NPC] Frame rendered after NPC load: {} bytes", frameData.size());
+            } else {
+                spdlog::warn("[NPC] RenderFrame returned empty after successful LoadNPC!");
             }
         } else {
             response["error"] = m_service->GetLastError();
