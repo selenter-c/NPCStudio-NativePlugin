@@ -3,12 +3,56 @@
 #include "MagelightUI_Mod.h"
 #include <memory>
 #include <atomic>
+#include <fstream>
 
 namespace NPCStudio::UI {
 using json = nlohmann::json;
 static MAGELIGHT_API::MagelightMod Host;
 static MAGELIGHT_API::ViewId View = 0;
 static std::atomic<std::uint64_t> Epoch = 0;
+
+static std::atomic<unsigned> Hotkey = 0x42;
+static std::atomic<unsigned> Modifiers = 1;
+static constexpr auto SettingsPath = L"Data/SKSE/Plugins/NPCStudio/settings.json";
+
+nlohmann::json Settings() { return {{"key", Hotkey.load()}, {"modifiers", Modifiers.load()}}; }
+void SaveSettings(const nlohmann::json& settings) {
+    const auto key = settings.at("key").get<unsigned>();
+    const auto modifiers = settings.at("modifiers").get<unsigned>();
+    if (key < 2 || key > 211 || modifiers > 7 || key == 0x2A || key == 0x36 || key == 0x1D || key == 0x9D || key == 0x38 || key == 0xB8)
+        throw std::runtime_error("Неверная клавиша или модификатор");
+    std::filesystem::create_directories(std::filesystem::path(SettingsPath).parent_path());
+    const auto temp = std::filesystem::path(std::wstring(SettingsPath) + L".tmp");
+    { std::ofstream file(temp); file << settings.dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать настройки"); }
+    if (!MoveFileExW(temp.c_str(), SettingsPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить настройки");
+    Hotkey = key; Modifiers = modifiers;
+}
+
+static void Toggle(void*) {
+    if (!Host || !View) return;
+    if (Host.v4()->GetUIModeOwner() == Host.id()) { Close(); return; }
+    auto* ui = RE::UI::GetSingleton();
+    auto state = StudioService::Get().Execute({{"action", "state"}});
+    if (!state.value("worldLoaded", false) || !ui || ui->GameIsPaused() || ui->IsMenuOpen(RE::Console::MENU_NAME) ||
+        ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return;
+    Host.v4()->RequestUIMode(View, 0);
+}
+class HotkeySink : public RE::BSTEventSink<RE::InputEvent*> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* events, RE::BSTEventSource<RE::InputEvent*>*) override {
+        if (!events) return RE::BSEventNotifyControl::kContinue;
+        for (auto* event = *events; event; event = event->next) {
+            auto* button = event->AsButtonEvent();
+            if (!button || button->GetDevice() != RE::INPUT_DEVICE::kKeyboard || !button->IsDown() || button->GetIDCode() != Hotkey.load()) continue;
+            const unsigned modifiers = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 1u : 0u) |
+                ((GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 2u : 0u) |
+                ((GetAsyncKeyState(VK_MENU) & 0x8000) ? 4u : 0u);
+            if (modifiers == Modifiers.load() && Host) Host.v4()->PostGameTask(Toggle, nullptr);
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+static HotkeySink InputSink;
 
 struct Command { std::string text; std::uint64_t epoch = 0; };
 
@@ -64,8 +108,15 @@ void Initialize() {
     Host.v4()->RegisterJSListenerEx(View, "studioCommand", OnCommand, nullptr);
     Host.onClose(View, [](auto) { ++Epoch; Host.v4()->ShowView(View, false); });
     Host.onError(View, [](auto, const char* error) { logger::error("Ошибка страницы NPCStudio: {}", error); Close(); });
-    // F8 свободен от модификаторов и обрабатывается самим владельцем фокуса Magelight.
-    Host.v4()->BindHotkey(View, 0x42, MAGELIGHT_API::kHotkeyActionToggleUIMode);
-    logger::info("Интерфейс Magelight готов; F8 открывает NPCStudio");
+    try {
+        if (std::filesystem::exists(SettingsPath)) {
+            std::ifstream file(SettingsPath); auto settings = json::parse(file);
+            const auto key = settings.at("key").get<unsigned>();
+            const auto modifiers = settings.at("modifiers").get<unsigned>();
+            if (key >= 2 && key <= 211 && modifiers <= 7) { Hotkey = key; Modifiers = modifiers; }
+        }
+    } catch (const std::exception& e) { logger::warn("Настройки клавиш: {}", e.what()); }
+    if (auto* input = RE::BSInputDeviceManager::GetSingleton()) input->AddEventSink(&InputSink);
+    logger::info("Интерфейс готов; клавиша {}, модификаторы {} (по умолчанию Shift+F8)", Hotkey.load(), Modifiers.load());
 }
 }

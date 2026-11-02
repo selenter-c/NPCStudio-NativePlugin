@@ -2,6 +2,7 @@
 #include "core/StateCodec.h"
 #include <fstream>
 #include <map>
+#include <set>
 #include <unordered_set>
 
 namespace NPCStudio::Equipment {
@@ -63,15 +64,11 @@ static json ItemInfo(RE::TESBoundObject* form, int count, bool worn) {
     return item;
 }
 
-json Describe(RE::Actor* actor, const json& command) {
-    json inventory = json::array(), presets = json::array(), catalog = json::array();
-    for (auto& [object, entry] : actor->GetInventory()) {
-        if (!Supported(object) || entry.first <= 0) continue;
-        try { inventory.push_back(ItemInfo(object, entry.first, entry.second && entry.second->IsWorn())); }
-        catch (const std::exception&) { /* Динамические предметы не входят в переносимые наборы. */ }
-    }
+json Library() {
+    json presets = json::array();
     for (const auto& [id, preset] : ReadPresets()) {
         auto preview = preset;
+        preview["category"] = preset.value("category", std::string("Мои наборы"));
         preview["id"] = id;
         preview["available"] = true;
         preview["error"] = "";
@@ -79,6 +76,48 @@ json Describe(RE::Actor* actor, const json& command) {
         catch (const std::exception& e) { preview["available"] = false; preview["error"] = e.what(); }
         presets.push_back(std::move(preview));
     }
+    std::set<std::string> categories{"Мои наборы"};
+    for (const auto& preset : presets) categories.insert(preset.at("category").get<std::string>());
+    const auto path = PresetDirectory.parent_path() / "categories.json";
+    if (std::filesystem::exists(path)) {
+        std::ifstream file(path);
+        auto saved = json::parse(file);
+        if (!saved.is_array() || saved.size() > 100) throw std::runtime_error("Повреждены категории");
+        for (const auto& name : saved) if (name.is_string() && ValidName(name.get<std::string>())) categories.insert(name.get<std::string>());
+    }
+    return {{"presets", presets}, {"categories", categories}};
+}
+void AddCategory(const std::string& name) {
+    if (!ValidName(name)) throw std::runtime_error("Некорректное название категории");
+    auto categories = Library().at("categories").get<std::set<std::string>>();
+    categories.insert(name);
+    if (categories.size() > 100) throw std::runtime_error("Достигнут предел 100 категорий");
+    std::filesystem::create_directories(PresetDirectory.parent_path());
+    const auto path = PresetDirectory.parent_path() / "categories.json";
+    auto temp = path; temp += ".tmp";
+    { std::ofstream file(temp, std::ios::binary | std::ios::trunc); file << json(categories).dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать категории"); }
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить категории");
+}
+void ValidatePreset(const std::string& id) {
+    const auto presets = ReadPresets();
+    const auto found = presets.find(id);
+    if (found == presets.end()) throw std::runtime_error("Набор не найден");
+    std::unordered_set<RE::TESBoundObject*> seen;
+    for (const auto& item : found->second.at("items")) {
+        auto* form = Resolve(item);
+        const auto count = item.value("count", 1u);
+        if (!count || count > 1000 || !seen.insert(form).second) throw std::runtime_error("Неверный состав набора");
+    }
+}
+
+json Describe(RE::Actor* actor, const json& command) {
+    json inventory = json::array(), presets = json::array(), catalog = json::array();
+    for (auto& [object, entry] : actor->GetInventory()) {
+        if (!Supported(object) || entry.first <= 0) continue;
+        try { inventory.push_back(ItemInfo(object, entry.first, entry.second && entry.second->IsWorn())); }
+        catch (const std::exception&) { /* Динамические предметы не входят в переносимые наборы. */ }
+    }
+    presets = Library().at("presets");
     const auto query = Fold(command.value("query", std::string()));
     if (query.size() > 80) throw std::runtime_error("Слишком длинный поисковый запрос");
     const auto kind = command.value("kind", std::string("armor"));
@@ -108,6 +147,62 @@ static void GiveAndEquip(RE::Actor* actor, RE::TESBoundObject* object, unsigned 
     if (existing < static_cast<int>(count)) actor->AddObjectToContainer(object, nullptr, static_cast<int>(count) - existing, nullptr);
     // Без forceEquip: предмет впоследствии можно снять обычными средствами.
     RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, nullptr, count, nullptr, false, false, false, true);
+}
+
+json Capture(RE::Actor* actor) {
+    json inventory = json::array(), worn = json::array();
+    unsigned skipped = 0;
+    for (auto& [object, entry] : actor->GetInventory()) {
+        if (!object || entry.first <= 0) continue;
+        try {
+            auto item = Address(object);
+            item["count"] = entry.first;
+            item["name"] = object->GetName();
+            inventory.push_back(item);
+            if (Supported(object) && entry.second && entry.second->IsWorn()) {
+                item["count"] = object->Is(RE::FormType::Ammo) ? entry.first : 1;
+                item["left"] = entry.second->IsWorn(true);
+                worn.push_back(item);
+            }
+        } catch (const std::exception&) { ++skipped; }
+    }
+    return {{"inventory", inventory}, {"worn", worn}, {"skipped", skipped}};
+}
+json Restore(RE::Actor* actor, const json& saved) {
+    RequireActive(actor);
+    json missing = json::array();
+    auto inventory = actor->GetInventory();
+    for (const auto& item : saved.at("inventory")) {
+        auto* object = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESBoundObject>(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        const auto found = inventory.find(object);
+        const auto count = found == inventory.end() ? 0 : std::max(0, found->second.first);
+        if (count < item.at("count").get<int>()) missing.push_back({{"name", item.value("name", std::string("Предмет"))}, {"expected", item.at("count")}, {"actual", count}});
+    }
+    for (const auto& item : saved.at("worn")) {
+        auto* object = Resolve(item);
+        const auto found = inventory.find(object);
+        if (found == inventory.end() || found->second.first <= 0) continue;
+        RE::ExtraDataList* extra = nullptr;
+        if (found->second.second && found->second.second->extraLists) {
+            for (auto* candidate : *found->second.second->extraLists) if (candidate) { extra = candidate; break; }
+        }
+        RE::BGSEquipSlot* hand = nullptr;
+        if (object->Is(RE::FormType::Weapon) && item.value("left", false)) {
+            for (auto* slot : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::BGSEquipSlot>())
+                if (slot && slot->GetFormEditorID() && std::string_view(slot->GetFormEditorID()) == "LeftHand") { hand = slot; break; }
+        }
+        const unsigned count = object->Is(RE::FormType::Ammo) ? static_cast<unsigned>(std::min(found->second.first, item.at("count").get<int>())) : 1;
+        RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, extra, count, hand, false, false, false, true);
+    }
+    json notEquipped = json::array();
+    auto after = actor->GetInventory();
+    for (const auto& item : saved.at("worn")) {
+        auto* object = Resolve(item);
+        auto found = after.find(object);
+        if (found == after.end() || !found->second.second || !found->second.second->IsWorn())
+            notEquipped.push_back(item.value("name", std::string("Предмет")));
+    }
+    return {{"missing", missing}, {"notEquipped", notEquipped}, {"checked", saved.at("inventory").size()}, {"skipped", saved.value("skipped", 0u)}};
 }
 
 void Execute(RE::Actor* actor, const json& command) {
@@ -168,7 +263,9 @@ void Execute(RE::Actor* actor, const json& command) {
         auto temp = path; temp += ".tmp";
         {
             std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-            file << json{{"schemaVersion", 1}, {"name", name}, {"items", items}}.dump(2);
+            const auto category = command.value("category", std::string("Мои наборы"));
+            if (!ValidName(category)) throw std::runtime_error("Некорректная категория");
+            file << json{{"schemaVersion", 1}, {"name", name}, {"category", category}, {"items", items}}.dump(2);
             file.flush();
             if (!file) throw std::runtime_error("Не удалось записать набор на диск");
         }

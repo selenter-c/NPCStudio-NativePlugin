@@ -1,5 +1,8 @@
 #include "core/NameCompatibility.h"
+#include "core/StateCodec.h"
 #include "NND_API.h"
+#include <fstream>
+#include <random>
 
 namespace NPCStudio::Names {
 static NND_API::IVNND1* NND() {
@@ -13,6 +16,38 @@ static NND_API::IVNND1* NND() {
         return result;
     }();
     return api;
+}
+
+nlohmann::json Random(bool female, std::string_view race) {
+    using json = nlohmann::json;
+    std::string stem = "NNDNord";
+    for (auto [token, file] : {std::pair{"WoodElf", "NNDBosmer"}, {"HighElf", "NNDAltmer"}, {"DarkElf", "NNDDunmer"},
+        {"Breton", "NNDBreton"}, {"Imperial", "NNDImperial"}, {"Redguard", "NNDRedguard"}, {"Orc", "NNDOrc"},
+        {"Argonian", "NNDArgonianTamrielic"}, {"Khajiit", "NNDKhajiitTaagraPrefixHonorifics"}})
+        if (race.find(token) != std::string_view::npos) { stem = file; break; }
+    const auto path = std::filesystem::path("Data/SKSE/Plugins/NPCsNamesDistributor") / (stem + ".json");
+    std::vector<std::string> names;
+    std::string source = "Встроенные имена NPCStudio";
+    try {
+        if (std::filesystem::exists(path) && std::filesystem::file_size(path) < 4 * 1024 * 1024) {
+            std::ifstream file(path); auto definition = json::parse(file);
+            for (const auto* segment : {"First", "Middle"}) {
+                if (!definition.contains(segment)) continue;
+                const auto& value = definition.at(segment);
+                for (const auto* gender : {female ? "Female" : "Male", "Any"}) {
+                    if (!value.contains(gender) || !value.at(gender).contains("Names")) continue;
+                    for (const auto& name : value.at(gender).at("Names"))
+                        if (name.is_string() && ValidName(name.get<std::string>())) names.push_back(name.get<std::string>());
+                }
+                if (!names.empty()) break;
+            }
+            if (!names.empty()) source = stem + ".json (Tamrielic Names / NND)";
+        }
+    } catch (const std::exception& e) { logger::warn("Имена {}: {}", stem, e.what()); }
+    if (names.empty()) names = female ? std::vector<std::string>{"Эйра", "Хельга", "Сигрид", "Руна", "Фрейда", "Ингрид"} :
+        std::vector<std::string>{"Эрандир", "Фаэлин", "Андорил", "Галедор", "Рален", "Фенрил"};
+    static std::mt19937 generator(std::random_device{}());
+    return {{"name", names.at(std::uniform_int_distribution<std::size_t>(0, names.size() - 1)(generator))}, {"source", source}};
 }
 
 void Protect(RE::TESNPC* base) {

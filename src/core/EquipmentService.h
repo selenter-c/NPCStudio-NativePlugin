@@ -3,5 +3,10 @@
 
 namespace NPCStudio::Equipment {
 nlohmann::json Describe(RE::Actor* actor, const nlohmann::json& command);
+nlohmann::json Library();
+void AddCategory(const std::string& name);
+void ValidatePreset(const std::string& id);
+nlohmann::json Capture(RE::Actor* actor);
+nlohmann::json Restore(RE::Actor* actor, const nlohmann::json& saved);
 void Execute(RE::Actor* actor, const nlohmann::json& command);
 }

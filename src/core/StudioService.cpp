@@ -2,6 +2,7 @@
 #include "core/StateCodec.h"
 #include "core/EquipmentService.h"
 #include "core/NameCompatibility.h"
+#include "ui/MagelightBridge.h"
 #include <fstream>
 #include <unordered_set>
 
@@ -19,7 +20,7 @@ void StudioService::Initialize() {
     try {
         std::ifstream file("Data/SKSE/Plugins/NPCStudio/slots.json");
         auto manifest = json::parse(file);
-        if (manifest.at("schemaVersion") != 1 || manifest.at("plugin") != "NPCStudio.esp" || manifest.at("slots").size() != 160)
+        if (manifest.at("schemaVersion") != 2 || manifest.at("plugin") != "NPCStudio.esp" || manifest.at("slots").size() != SlotCount)
             throw std::runtime_error("Неверный манифест пула NPCStudio");
         auto* data = RE::TESDataHandler::GetSingleton();
         holdingAnchor = data->LookupForm<RE::TESObjectREFR>(0x801, "NPCStudio.esp");
@@ -33,7 +34,7 @@ void StudioService::Initialize() {
             slot.base = data->LookupForm<RE::TESNPC>(entry.at("base").get<unsigned>(), "NPCStudio.esp");
             slot.actor = data->LookupForm<RE::Actor>(entry.at("reference").get<unsigned>(), "NPCStudio.esp");
             if (slot.id != resolved.size() || !slot.base || !slot.actor || slot.actor->GetActorBase() != slot.base ||
-                slot.base->IsFemale() != slot.female || !bases.insert(slot.base->GetFormID()).second ||
+                slot.base->IsFemale() != slot.female || slot.female != FemaleSlot(slot.id) || !bases.insert(slot.base->GetFormID()).second ||
                 !actors.insert(slot.actor->GetFormID()).second)
                 throw std::runtime_error("ESP и манифест слотов не совпадают");
             slot.defaultName = slot.base->GetName();
@@ -42,6 +43,17 @@ void StudioService::Initialize() {
         }
         slots = std::move(resolved);
         ready = true;
+        worker = std::jthread([this](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                if (!workPending.load() || taskQueued.exchange(true)) continue;
+                const auto epoch = worldEpoch.load();
+                SKSE::GetTaskInterface()->AddTask([this, epoch] {
+                    if (epoch == worldEpoch.load()) Pump();
+                    taskQueued = false;
+                });
+            }
+        });
         logger::info("Загружен пул: {} постоянных слотов", slots.size());
     } catch (const std::exception& e) {
         ready = false;
@@ -56,45 +68,80 @@ StudioService::Slot& StudioService::Find(unsigned id) {
 }
 
 json StudioService::Snapshot() const {
-    json list = json::array();
+    json list = json::array(), available = json::array();
     unsigned females = 0, males = 0;
     for (const auto& slot : slots) {
         const auto key = std::to_string(slot.id);
-        if (!assignments.contains(key)) continue;
+        if (!assignments.contains(key)) {
+            available.push_back({{"id", slot.id}, {"female", slot.female}, {"number", SlotNumber(slot.id)},
+                {"history", usedSlots.contains(slot.id) ? "used" : legacyHistoryUnknown && slot.id < 160 ? "unknown" : "fresh"}});
+            continue;
+        }
         const auto& saved = assignments.at(key);
         slot.female ? ++females : ++males;
-        list.push_back({{"id", slot.id}, {"female", slot.female}, {"name", saved.at("name")}, {"identity", saved.value("identity", fmt::format("slot-{}", slot.id))},
+        list.push_back({{"id", slot.id}, {"female", slot.female}, {"number", SlotNumber(slot.id)}, {"warning", saved.value("warning", std::string())}, {"audit", saved.value("audit", json::object())}, {"restoring", restoring.contains(slot.id)}, {"name", saved.at("name")}, {"identity", saved.value("identity", fmt::format("slot-{}", slot.id))},
             {"parked", slot.actor->IsDisabled()}, {"dead", slot.actor->IsDead()},
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"race", slot.base->GetRace() ? slot.base->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.3.1"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
-        {"femaleUsed", females}, {"maleUsed", males}, {"slots", list},
+    return {{"version", "0.4.0"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+        {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", false}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
 
 json StudioService::Execute(const json& command) {
     const auto action = command.at("action").get<std::string>();
     if (action == "state") return Snapshot();
+    if (action == "saveSettings") { UI::SaveSettings(command.at("settings")); return Snapshot(); }
+    if (action == "addCategory") { Equipment::AddCategory(command.at("name").get<std::string>()); return Snapshot(); }
     if (!ready || !stateValid) throw std::runtime_error(error.empty() ? "Пул недоступен" : error);
     if (!loaded || !RE::PlayerCharacter::GetSingleton()->GetParentCell())
         throw std::runtime_error("Сначала загрузите сохранение или начните новую игру");
     auto* player = RE::PlayerCharacter::GetSingleton();
+    if (action == "randomName") {
+        bool female = command.value("female", true);
+        RE::TESNPC* base = nullptr;
+        if (command.contains("id")) {
+            auto& slot = Find(command.at("id").get<unsigned>());
+            if (!assignments.contains(std::to_string(slot.id))) throw std::runtime_error("Слот не занят");
+            female = slot.female; base = slot.base;
+        } else {
+            for (auto& slot : slots) if (slot.female == female) { base = slot.base; break; }
+        }
+        auto name = Names::Random(female, base && base->GetRace() ? base->GetRace()->GetFormEditorID() : "NordRace");
+        auto state = Snapshot(); state["generatedName"] = name; return state;
+    }
     if (action == "create") {
         const bool female = command.at("female").get<bool>();
         auto name = command.at("name").get<std::string>();
         if (!ValidName(name))
             throw std::runtime_error("Имя должно содержать от 1 до 160 байт без переноса строки");
-        auto it = std::find_if(slots.begin(), slots.end(), [&](const Slot& s) {
-            return s.female == female && !assignments.contains(std::to_string(s.id));
-        });
+        auto it = slots.end();
+        if (command.contains("slot") && !command.at("slot").is_null()) {
+            const auto id = command.at("slot").get<unsigned>();
+            if (id >= slots.size()) throw std::runtime_error("Неизвестный слот");
+            it = slots.begin() + id;
+            if (it->female != female || assignments.contains(std::to_string(id))) throw std::runtime_error("Слот занят или не соответствует выбранному полу");
+        } else {
+            int priority = 3;
+            PoolState history{assignments, usedSlots, legacyHistoryUnknown};
+            for (auto candidate = slots.begin(); candidate != slots.end(); ++candidate) {
+                if (candidate->female != female || assignments.contains(std::to_string(candidate->id))) continue;
+                const auto rank = SlotHistoryPriority(candidate->id, history);
+                if (rank < priority) { priority = rank; it = candidate; }
+            }
+        }
         if (it == slots.end()) throw std::runtime_error("Свободных слотов выбранного пола нет");
+        const auto preset = command.value("preset", std::string());
+        if (!preset.empty()) Equipment::ValidatePreset(preset);
         auto& slot = *it;
         if (slot.actor->IsDead()) throw std::runtime_error("Резервный актёр погиб: слот требует диагностики");
         Names::Apply(slot.base, slot.actor, name);
         slot.actor->MoveTo(player);
         slot.actor->Enable(false);
         assignments[std::to_string(slot.id)] = {{"name", name}, {"identity", fmt::format("slot-{}-{}-{}", slot.id, std::chrono::system_clock::now().time_since_epoch().count(), GetCurrentProcessId())}};
+        usedSlots.insert(slot.id);
+        if (!preset.empty()) QueueRestore(slot, preset);
         logger::info("Создан NPC '{}' в слоте {}, reference {:08X}", name, slot.id, slot.actor->GetFormID());
     } else {
         auto& slot = Find(command.at("id").get<unsigned>());
@@ -109,10 +156,15 @@ json StudioService::Execute(const json& command) {
             Delete(slot);
         } else if (action == "summon") {
             if (slot.actor->IsDead()) throw std::runtime_error("NPC погиб. Призыв не воскрешает персонажа");
+            if (!slot.actor->IsDisabled() && slot.actor->Is3DLoaded() && !restoring.contains(slot.id)) assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             slot.actor->MoveTo(player);
             slot.actor->Enable(false);
+            QueueRestore(slot);
         } else if (action == "park") {
             // Слот остаётся занятым: его личность и сохранённые данные не переиспользуются.
+            if (slot.actor->IsDisabled()) return Snapshot();
+            if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
+            assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             slot.actor->Disable();
         } else if (action == "teleport") {
             if (slot.actor->IsDisabled()) throw std::runtime_error("NPC убран из мира. Сначала призовите его");
@@ -125,7 +177,9 @@ json StudioService::Execute(const json& command) {
             assignments[key]["name"] = name;
         } else if (action == "equipment" || action == "giveItem" || action == "unequipItem" ||
             action == "applyEquipmentPreset" || action == "saveEquipmentPreset") {
+            if (restoring.contains(slot.id)) throw std::runtime_error("Снаряжение ещё восстанавливается");
             Equipment::Execute(slot.actor, command);
+            if (action != "equipment") assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             auto state = Snapshot();
             state["equipment"] = Equipment::Describe(slot.actor, command);
             state["equipmentOwnerId"] = slot.id;
@@ -137,6 +191,8 @@ json StudioService::Execute(const json& command) {
 
 void StudioService::Delete(Slot& slot) {
     if (!holdingAnchor) throw std::runtime_error("Резервная точка недоступна");
+    restoring.erase(slot.id);
+    usedSlots.insert(slot.id);
     slot.actor->StopCombat();
     // Предметы удаляются, а не выбрасываются в мир и не передаются игроку.
     for (auto& [object, entry] : slot.actor->GetInventory()) {
@@ -159,7 +215,45 @@ void StudioService::Delete(Slot& slot) {
     logger::info("Удалён NPC '{}' из слота {}; reference {:08X} возвращена в резерв", oldName, slot.id, slot.actor->GetFormID());
 }
 
-void StudioService::BeforeLoad() { loaded = false; }
+void StudioService::QueueRestore(Slot& slot, const std::string& preset) {
+    const auto key = std::to_string(slot.id);
+    if (!preset.empty()) assignments[key]["pendingPreset"] = preset;
+    restoring[slot.id] = {assignments.at(key).value("identity", fmt::format("slot-{}", slot.id)), assignments.at(key).value("pendingPreset", std::string())};
+    assignments[key]["warning"] = "Восстановление снаряжения…";
+    workPending = true;
+}
+void StudioService::Pump() {
+    if (!loaded || !stateValid) { restoring.clear(); workPending = false; return; }
+    for (auto it = restoring.begin(); it != restoring.end();) {
+        auto& slot = Find(it->first);
+        auto& job = it->second;
+        const auto key = std::to_string(slot.id);
+        if (!assignments.contains(key) || assignments.at(key).value("identity", fmt::format("slot-{}", slot.id)) != job.identity || slot.actor->IsDisabled()) { it = restoring.erase(it); continue; }
+        try {
+            if (++job.attempts > 40) throw std::runtime_error("Модель не загрузилась за 6 секунд; призовите NPC повторно");
+            if (!slot.actor->Is3DLoaded()) { ++it; continue; }
+            if (job.stage > 0 && job.stage++ < 4) { ++it; continue; }
+            if (!job.preset.empty()) {
+                Equipment::Execute(slot.actor, {{"action", "applyEquipmentPreset"}, {"preset", job.preset}});
+                assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+                assignments[key].erase("pendingPreset");
+                job.preset.clear(); job.stage = 1; ++it; continue;
+            }
+            if (assignments.at(key).contains("loadout")) {
+                const auto audit = Equipment::Restore(slot.actor, assignments.at(key).at("loadout"));
+                assignments[key]["audit"] = audit;
+                if (job.stage == 0) { job.stage = 1; ++it; continue; }
+                assignments[key]["warning"] = audit.at("missing").empty() && audit.at("notEquipped").empty() ?
+                    fmt::format("Снаряжение восстановлено. Проверено вещей: {}; динамических пропущено: {}", audit.at("checked").get<unsigned>(), audit.at("skipped").get<unsigned>()) :
+                    fmt::format("Недостача: {}; не надето: {}. Проверьте снаряжение", audit.at("missing").size(), audit.at("notEquipped").size());
+                logger::info("Проверка снаряжения слот {}: {}", slot.id, audit.dump());
+            } else assignments[key]["warning"] = "Для старого скрытого NPC нет снимка надетых вещей. Примените набор и сохраните игру";
+            it = restoring.erase(it);
+        } catch (const std::exception& e) { assignments[key]["warning"] = e.what(); logger::warn("Восстановление слот {}: {}", slot.id, e.what()); it = restoring.erase(it); }
+    }
+    workPending = !restoring.empty();
+}
+void StudioService::BeforeLoad() { ++worldEpoch; restoring.clear(); workPending = false; loaded = false; }
 
 void StudioService::RestoreNames() {
     if (!ready || !stateValid) return;
@@ -184,11 +278,15 @@ void StudioService::AfterLoad(bool success) {
             }
         }
     }
-    if (success) RestoreNames();
+    if (success) {
+        RestoreNames();
+        for (auto& slot : slots) if (assignments.contains(std::to_string(slot.id)) && !slot.actor->IsDisabled() && (assignments.at(std::to_string(slot.id)).contains("loadout") || assignments.at(std::to_string(slot.id)).contains("pendingPreset"))) QueueRestore(slot);
+    }
 }
 
 void StudioService::NewGame() {
     assignments = json::object();
+    usedSlots.clear(); legacyHistoryUnknown = false; restoring.clear(); workPending = false;
     stateValid = true;
     if (ready) error.clear();
     loaded = true;
@@ -197,6 +295,8 @@ void StudioService::NewGame() {
 
 void StudioService::Revert() {
     // RE:: объекты здесь не изменяются: SKSE вызывает это и во время смены мира.
+    ++worldEpoch; restoring.clear(); workPending = false;
+    usedSlots.clear(); legacyHistoryUnknown = false;
     loaded = false;
     stateValid = true;
     if (ready) error.clear();
@@ -205,7 +305,11 @@ void StudioService::Revert() {
 
 void StudioService::Save(SKSE::SerializationInterface* stream) {
     if (!ready || !stateValid) return;
-    const auto text = json{{"poolVersion", 1}, {"assignments", assignments}}.dump();
+    for (auto& slot : slots) {
+        const auto key = std::to_string(slot.id);
+        if (assignments.contains(key) && !slot.actor->IsDisabled() && slot.actor->Is3DLoaded() && !restoring.contains(slot.id)) assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+    }
+    const auto text = json{{"poolVersion", 2}, {"assignments", assignments}, {"usedSlots", usedSlots}, {"legacyHistoryUnknown", legacyHistoryUnknown}}.dump();
     if (!stream->WriteRecord(StateTag, StateVersion, text.data(), static_cast<std::uint32_t>(text.size())))
         logger::error("Не удалось сохранить состояние NPCStudio");
 }
@@ -217,12 +321,15 @@ void StudioService::Load(SKSE::SerializationInterface* stream) {
     try {
         while (stream->GetNextRecordInfo(type, version, length)) {
             if (type != StateTag) continue;
-            if (seen || version != StateVersion || length > 1024 * 1024) throw std::runtime_error("Неподдерживаемый co-save NPCStudio");
+            if (seen || version != StateVersion || length > 32 * 1024 * 1024) throw std::runtime_error("Неподдерживаемый co-save NPCStudio");
             seen = true;
             std::string text(length, '\0');
             if (stream->ReadRecordData(text.data(), length) != length) throw std::runtime_error("Оборванное состояние NPCStudio");
             auto saved = json::parse(text);
-            assignments = DecodeState(saved);
+            auto decoded = DecodePoolState(saved);
+            assignments = std::move(decoded.assignments);
+            usedSlots = std::move(decoded.used);
+            legacyHistoryUnknown = decoded.legacyHistoryUnknown;
         }
     } catch (const std::exception& e) {
         stateValid = false;
