@@ -1,5 +1,6 @@
 #include "core/StudioService.h"
 #include "core/StateCodec.h"
+#include "core/EquipmentService.h"
 #include <fstream>
 #include <unordered_set>
 
@@ -63,9 +64,9 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"race", slot.base->GetRace() ? slot.base->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.2.0"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.3.0"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list},
-        {"capabilities", {{"preview", false}, {"appearance", false}, {"biography", false}}}};
+        {"capabilities", {{"preview", false}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
 
 json StudioService::Execute(const json& command) {
@@ -113,6 +114,13 @@ json StudioService::Execute(const json& command) {
             slot.base->SetFullName(name.c_str());
             slot.actor->SetDisplayName(RE::BSFixedString(name), true);
             assignments[key]["name"] = name;
+        } else if (action == "equipment" || action == "giveItem" || action == "unequipItem" ||
+            action == "applyEquipmentPreset" || action == "saveEquipmentPreset") {
+            Equipment::Execute(slot.actor, command);
+            auto state = Snapshot();
+            state["equipment"] = Equipment::Describe(slot.actor, command);
+            state["equipmentOwnerId"] = slot.id;
+            return state;
         } else throw std::runtime_error("Неизвестная команда");
     }
     return Snapshot();

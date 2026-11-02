@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(NPCStudio VERSION 0.2.0 LANGUAGES CXX)
+project(NPCStudio VERSION 0.3.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -19,6 +19,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_commonlibsse_plugin(NPCStudio AUTHOR "NPCStudio" USE_ADDRESS_LIBRARY SOURCES
     src/plugin.cpp
     src/core/StudioService.cpp
+    src/core/EquipmentService.cpp
     src/ui/MagelightBridge.cpp
 )
 target_compile_definitions(NPCStudio PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
