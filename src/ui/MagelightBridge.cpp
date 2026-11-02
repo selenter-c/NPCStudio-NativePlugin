@@ -114,7 +114,7 @@ void Initialize() {
         auto settings = Settings();
         if (std::filesystem::exists(SettingsPath)) {
             std::ifstream file(SettingsPath); settings = json::parse(file);
-            settings = NormalizeSettings(settings, Settings(), true);
+            settings = NormalizeSettings(settings, Settings());
         }
         SaveSettings(settings);
     } catch (const std::exception& e) { logger::warn("Настройки интерфейса: {}", e.what()); }

@@ -1,37 +1,5 @@
 #include "core/RaceService.h"
-#include <atomic>
-#include <memory>
-#include <unordered_map>
 namespace NPCStudio::Races {
-using Completion = std::shared_ptr<std::atomic<bool>>;
-static std::unordered_map<RE::FormID, Completion> Calls;
-class Callback : public RE::BSScript::IStackCallbackFunctor {
-    Completion completed;
-    RE::FormID formId;
-
-  public:
-    Callback(Completion value, RE::FormID id) : completed(std::move(value)), formId(id) {
-    }
-    void operator()(RE::BSScript::Variable) override {
-        logger::info("SetRace VM завершён для {:08X}", formId);
-        *completed = true;
-    }
-    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object> &) override {
-    }
-};
-bool Pending(RE::Actor *actor) {
-    const auto it = Calls.find(actor->GetFormID());
-    if (it == Calls.end())
-        return false;
-    if (!it->second->load())
-        return true;
-    Calls.erase(it);
-    return false;
-}
-void Clear() {
-    Calls.clear();
-}
-
 static constexpr std::string_view Allowed[] = {"NordRace",     "BretonRace",  "ImperialRace", "RedguardRace",
                                                "HighElfRace",  "WoodElfRace", "DarkElfRace",  "OrcRace",
                                                "ArgonianRace", "KhajiitRace"};
@@ -55,23 +23,14 @@ nlohmann::json List() {
     return result;
 }
 void Request(RE::Actor *actor, RE::TESRace *race) {
-    if (!actor || !race)
+    if (!actor || !race || actor->IsPlayerRef())
         throw std::runtime_error("Race is unavailable");
-    if (Pending(actor))
-        throw std::runtime_error("A race change is still pending");
     if (actor->GetRace() == race)
         return;
-    // Используем штатный SetRace через VM: поле ActorBase не заменяет пересборку скелета и головы.
-    auto *vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
-    auto *policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
-    if (!policy)
-        throw std::runtime_error("Papyrus VM is unavailable");
-    const auto handle = policy->GetHandleForObject(actor->GetFormType(), actor);
-    auto completed = std::make_shared<std::atomic<bool>>(false);
-    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback(new Callback(completed, actor->GetFormID()));
-    if (!vm->DispatchMethodCall(handle, "Actor", "SetRace", RE::MakeFunctionArguments(std::move(race)), callback))
-        throw std::runtime_error("Could not schedule Actor.SetRace");
-    Calls[actor->GetFormID()] = std::move(completed);
-    logger::info("SetRace запрос для {:08X}: {}", actor->GetFormID(), race->GetFormEditorID());
+    if (actor->IsDisabled() || !actor->Is3DLoaded())
+        throw std::runtime_error("NPC model is not loaded. Summon the character first");
+    // Прямой метод движка из закреплённого CommonLib. Вызывается только на игровом потоке.
+    logger::info("SwitchRace запрос для {:08X}: {}", actor->GetFormID(), race->GetFormEditorID());
+    actor->SwitchRace(race, false);
 }
 } // namespace NPCStudio::Races

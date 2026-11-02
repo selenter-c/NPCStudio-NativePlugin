@@ -30,8 +30,7 @@ private:
     RE::TESObjectREFR* holdingAnchor = nullptr;
     nlohmann::json assignments = nlohmann::json::object();
     std::set<unsigned> usedSlots;
-    bool legacyHistoryUnknown = false;
-    struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; };
+    struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; bool raceRequested = false; };
     std::map<unsigned, RestoreJob> restoring;
     std::atomic<bool> workPending = false;
     std::atomic<bool> taskQueued = false;

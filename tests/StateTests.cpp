@@ -1,68 +1,97 @@
 #include "ui/SettingsCodec.h"
 #include "core/StateCodec.h"
 #include <iostream>
-
 int main() {
     using nlohmann::json;
-    const auto accepts = [](const json& value) {
-        try { NPCStudio::DecodeState(value); return true; }
-        catch (...) { return false; }
+    const auto check = [](bool ok, const char *label) {
+        if (!ok) {
+            std::cerr << label << '\n';
+            std::exit(1);
+        }
     };
-    const auto check = [](bool ok, const char* label) {
-        if (!ok) { std::cerr << label << '\n'; std::exit(1); }
+    const auto accepts = [](const json &value) {
+        try {
+            NPCStudio::DecodePoolState(value);
+            return true;
+        } catch (...) {
+            return false;
+        }
     };
     using NPCStudio::UI::DefaultSettings;
     using NPCStudio::UI::NormalizeSettings;
     const auto ru = DefaultSettings("ru"), en = DefaultSettings("de");
-    check(ru.at("language") == "ru" && en.at("language") == "en", "Первый язык системы и английский fallback");
-    auto custom = ru; custom["language"] = "en"; custom["theme"] = "sapphire";
-    check(NormalizeSettings(json::parse(custom.dump()), ru, true) == custom, "Выбранный язык сохраняется независимо от системы");
-    const auto oldSettings = json{{"key",66},{"modifiers",1}};
-    check(NormalizeSettings(oldSettings,ru,true).at("key") == 9, "Старый стандартный Shift+F8 мигрирует в Shift+8");
-    auto customKey = oldSettings; customKey["key"] = 65;
-    check(NormalizeSettings(customKey,ru,true).at("key") == 65, "Переназначенная пользователем клавиша сохраняется");
-    auto modernKey = oldSettings; modernKey["schema"] = 2;
-    check(NormalizeSettings(modernKey,ru,true).at("key") == 66, "Явно выбранный F8 в новой версии сохраняется");
-    for (auto invalid : {json{{"key",1}}, json{{"key",42}}, json{{"modifiers",8}}, json{{"language","xx"}}, json{{"theme","bad"}}}) {
+    check(ru.at("language") == "ru" && en.at("language") == "en", "Язык системы и английский fallback");
+    auto settings = ru;
+    settings["language"] = "en";
+    settings["theme"] = "sapphire";
+    settings["key"] = 66;
+    check(NormalizeSettings(json::parse(settings.dump()), ru) == settings,
+          "Выбранные язык и клавиши не переписываются");
+    for (auto invalid : {json{{"key", 1}}, json{{"key", 42}}, json{{"modifiers", 8}}, json{{"language", "xx"}},
+                         json{{"theme", "bad"}}}) {
         bool rejected = false;
-        try { NormalizeSettings(invalid,ru); } catch (...) { rejected = true; }
-        check(rejected,"Недопустимые настройки отвергаются до записи");
+        try {
+            NormalizeSettings(invalid, ru);
+        } catch (...) {
+            rejected = true;
+        }
+        check(rejected, "Недопустимые настройки приняты");
     }
-    auto state = json{{"poolVersion", 1}, {"assignments", {{"0", {{"name", "Элара"}}}, {"159", {{"name", "Рал"}}}}}};
-    check(accepts(state), "Кириллица и крайние слоты");
-    check(NPCStudio::DecodeState(state) == state["assignments"], "Состояние не изменяется при чтении");
-    for (const auto* key : {"-1", "160", "01", "1x", "999999999999999999999"}) {
+    auto state = json{{"poolVersion", 3},
+                      {"assignments",
+                       {{"0", {{"name", "Элара"}, {"identity", "first-life"}, {"race", "OrcRace"}}},
+                        {"399", {{"name", "Рал"}, {"identity", "last-life"}, {"race", "WoodElfRace"}}}}},
+                      {"usedSlots", {0, 399}}};
+    check(accepts(state), "Кириллица, орк и крайние слоты");
+    check(NPCStudio::DecodePoolState(json::parse(state.dump())).assignments == state.at("assignments"),
+          "Текущий co-save изменён при чтении");
+    for (unsigned id = 0; id < 400; ++id) {
+        check(NPCStudio::FemaleSlot(id) == (id < 200), "Пул не разделён на два последовательных блока");
+        check(NPCStudio::SlotNumber(id) == id % 200 + 1, "Номер слота не соответствует полу");
+    }
+    for (const auto *key : {"-1", "400", "01", "1x", "999999999999999999999"}) {
         auto broken = state;
-        broken["assignments"][key] = {{"name", "NPC"}};
+        broken["assignments"][key] = state.at("assignments").at("0");
         check(!accepts(broken), "Некорректный номер слота принят");
     }
-    for (const auto& name : {std::string(), std::string("   "), std::string("NPC\n"), std::string("A\0B", 3), std::string(161, 'a')}) {
+    for (const auto &name :
+         {std::string(), std::string("   "), std::string("NPC\n"), std::string("A\0B", 3), std::string(161, 'a')}) {
         auto broken = state;
         broken["assignments"]["0"]["name"] = name;
         check(!accepts(broken), "Некорректное имя принято");
     }
+    for (const auto *field : {"identity", "race"}) {
+        auto broken = state;
+        broken["assignments"]["0"].erase(field);
+        check(!accepts(broken), "Обязательные данные подставлены автоматически");
+        broken = state;
+        broken["assignments"]["0"][field] = 7;
+        check(!accepts(broken), "Неверный тип данных принят");
+    }
     auto removed = state;
     removed["assignments"].erase("0");
-    check(NPCStudio::DecodeState(json::parse(removed.dump())) == removed["assignments"], "Удалённый слот возвращается после сериализации");
-    removed["assignments"]["0"] = {{"name", "Новый NPC"}, {"identity", "slot-0-new-life"}};
-    check(accepts(removed), "Повторное назначение слота не читается");
-    auto badIdentity = removed;
-    badIdentity["assignments"]["0"]["identity"] = 7;
-    check(!accepts(badIdentity), "Повреждённая личность слота принята");
-    auto migrated = NPCStudio::DecodePoolState(state);
-    check(migrated.legacyHistoryUnknown && migrated.used.contains(159), "История старого сохранения потеряна");
-    check(NPCStudio::SlotHistoryPriority(160, migrated) < NPCStudio::SlotHistoryPriority(1, migrated), "Новый слот не имеет приоритета перед неизвестным");
-    auto expanded = json{{"poolVersion", 2}, {"assignments", {{"399", {{"name", "Крайний слот"}, {"identity", "new"}}}}}, {"usedSlots", {0, 399}}, {"legacyHistoryUnknown", false}};
-    auto decoded = NPCStudio::DecodePoolState(json::parse(expanded.dump()));
-    check(decoded.used.contains(0) && decoded.used.contains(399), "Удаление не должно стирать историю");
-    check(NPCStudio::SlotHistoryPriority(1, decoded) < NPCStudio::SlotHistoryPriority(0, decoded), "Повторный слот предпочитается новому");
-    check(NPCStudio::FemaleSlot(159) == false && NPCStudio::FemaleSlot(160) && NPCStudio::FemaleSlot(279) && !NPCStudio::FemaleSlot(280), "Пол новых и старых слотов нарушен");
-    check(NPCStudio::SlotNumber(160) == 81 && NPCStudio::SlotNumber(399) == 200, "Неверный номер в резерве");
-    auto badHistory = expanded; badHistory["usedSlots"] = {0, 0}; check(!accepts(badHistory), "Дубликат истории принят");
-    badHistory["usedSlots"] = {-1}; check(!accepts(badHistory), "Отрицательный слот истории принят");
-    badHistory["usedSlots"] = {400}; check(!accepts(badHistory), "Выход за резерв принят");
-    state["poolVersion"] = 3;
-    check(!accepts(state), "Неизвестная версия принята");
+    auto decoded = NPCStudio::DecodePoolState(json::parse(removed.dump()));
+    check(decoded.assignments.size() == 1 && decoded.used.contains(0), "Удаление стерло историю слота");
+    check(NPCStudio::SlotHistoryPriority(1, decoded) < NPCStudio::SlotHistoryPriority(0, decoded),
+          "Повторный слот выбран раньше нового");
+    auto reused = removed;
+    reused["assignments"]["0"] = {{"name", "Новый NPC"}, {"identity", "second-life"}, {"race", "NordRace"}};
+    check(accepts(reused), "Повторное использование слота не читается");
+    auto broken = state;
+    broken["usedSlots"] = {399};
+    check(!accepts(broken), "Назначение без истории принято");
+    for (auto history : {json{0, 0}, json{-1}, json{400}, json{"0"}}) {
+        broken = state;
+        broken["usedSlots"] = history;
+        check(!accepts(broken), "Поврежденная история принята");
+    }
+    for (unsigned version : {1, 2, 4}) {
+        broken = state;
+        broken["poolVersion"] = version;
+        check(!accepts(broken), "Другой формат сохранения принят");
+    }
+    check(accepts(json{{"poolVersion", 3}, {"assignments", json::object()}, {"usedSlots", json::array()}}),
+          "Чистый пул не читается");
     check(!accepts(json::object()), "Пустой co-save принят");
-    std::cout << "State codec: passed\n";
+    std::cout << "Current state/settings codec: passed\n";
 }

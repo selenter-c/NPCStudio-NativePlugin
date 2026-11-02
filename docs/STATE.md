@@ -1,61 +1,41 @@
-# NPCStudio: состояние на 2026-11-03
+# NPCStudio — состояние2026-11-03,0.5.1
 
-## Правила работы
+## Правила
 
-- Общаться на русском, не обращаться по имени. Комментарии по-русски.
-- Пользователь разрешил commit/push/tag/откат во всех трёх main репозиториях NPCStudio-{Build,GamePlugin,NativePlugin}, origin github.com/selenter-c.
-- Computer-use и автозапуск Skyrim/MO2 запрещены. Установку и игровые действия выполняет пользователь. Разрешены терминал, файлы, read-only HouseCarl и headless проверки. Не менять профиль MO2 и не копировать DLL в работающую игру.
-- Сборка через Build/build.bat, NPCSTUDIO_NO_PAUSE=1; обычно инкрементально, без clean.
-- В игре подтверждена 0.4. Новые рендер и расы 0.5 ещё НЕ проверены в Skyrim.
+Русский, без обращения по имени. Пользователь разрешил commit/push/tag/откат для трёх NPCStudio main репозиториев (github.com/selenter-c). Computer-use/автозапуск Skyrim/MO2 запрещены; установка и игровые действия только пользователем. Разрешены терминал/файлы/read-onlyHouseCarl/headless тесты. Не менять MO2 профиль/не копировать DLL в работающую игру. Build/build.bat, NPCSTUDIO_NO_PAUSE=1, обычно без clean.
 
-## Версии и артефакты
+**Новое указание пользователя:** тестирует только с новой игры; поддержку предыдущих сохранений и миграции удалить. Не восстанавливать их при дальнейшей разработке. Не путать сохранение/загрузку текущей схемы с обратной совместимостью.
 
-Пользователь подтвердил 0.4 сообщением «Всё работает!». Тег checkpoint-0.4.0-user-tested: Build7009c76, Game0d9d53b, Native43b50e1. Более старые baseline и build/user-tested точки сохранены в Git. FaceGen пользователь исправил модами: без новой причины не чинить.
+## Контрольные точки
 
-Новая 0.5.0: Build/dist/NPCStudio-0.5.0-fomod.zip,51файл. Планируемый тег checkpoint-0.5.0-build-tested. Документация возможностей и ограничений — Native/README.md; разбор SeverActions и собственного рендера — docs/RENDERING_050.md (root и Native).
+0.4 подтверждена пользователем: checkpoint-0.4.0-user-tested (Build7009c76/Game0d9d53b/Native43b50e1). 0.5 build-tested: Build9930c28/Game0e15754/Native638a083, но VM SetRace в игре не сработал. Не считать0.5 user-tested. Теги в origin сохранены.
 
-## Новое в0.5
+Текущая0.5.1 исправляет пул и путь расы. Build/dist/NPCStudio-0.5.1-fomod.zip,51файл. Работу прямого SwitchRace и рендера в Skyrim ещё должен проверить пользователь. Не утверждать, что игровые тесты выполнены.
 
-1. Shift+8, верхняя цифровая клавиша DIK9. Старый стандарт schema1 key66/mod1 мигрирует; пользовательские назначения и schema2 не меняются. SettingsCodec.h покрыт CTest.
-2. English/Русский. Первый язык — GetUserDefaultUILanguage Windows, русский либо английский fallback. После выбора language хранится в settings.json независимо от системы. Общие настройки для всех сейвов, не co-save. Палитры amethyst/emerald/sapphire/ember, CSS hue variables. i18n.js переводит UI и встроенные комплекты; пользовательские имена и игровые item names не переводятся. Часть старых нестандартных диагностик может остаться в исходном виде.
-3. Новый SVG знак и подпись «Персонажи, которые останутся в вашем мире», circle-точки кубика, «Не выбран» в actorPicker. Connection убрана. Случайные советы при открытии; операции показывают отдельный toast на6.5сек, ошибки14сек.
-4. Выбор10обычных ванильных взрослых рас при создании и смена в roster. Races::Request вызывает штатный Actor.SetRace через VM DispatchMethodCall(handle,"Actor","SetRace",MakeFunctionArguments(race),callback). Сигнатура проверена по papyrus-reference. Callback лишь пишет logger/atomic completion, без RE. Calls поFormID изменяется только на game thread, clear на preload/newgame. Pump ждёт callback, фактическую расу и3D, затем восстанавливает gear. Если VM не ответит, слот останется restoring до reload; это ещё требует игрового теста. RaceEDID хранится в assignment.race, AfterLoad возобновляет. Пользовательские расы пока не включены. ESP и slots.json с0.4 не изменены.
-5. Собственный ActorPreview.cpp. Native-рендер SeverActions закрыт и не экспортируется: не называть это переносом их кода. Захватывает текущую позу модели и одежду; поворот yaw, zoom,3lights, head portrait. Это3Dснимок, без проигрывания анимаций; после изменения одежды кнопка refresh.
+## Что изменено0.5.1
 
-## Рендер: важные детали
+- Последовательный пул: id0..199female, id200..399male, номер=id%200+1. Формы полностью переорганизованы по разрешению пользователя: CLFM900+id/NPCB00+id/ACHRD00+id. CELL800, XMarker801;1202 уникальные формы, максимумE8F, ESL. Manifest schema3; предыдущие схемы не принимаются.
+- Co-save recordversion2, JSON poolVersion3. DecodePoolState только текущий формат, обязательные name/identity/race, назначения должны быть в usedSlots. Нет legacyHistoryUnknown, импорта160слотов, identity fallback и DecodeState wrapper. Свободные только fresh/used. История удалённых внутри текущей игры сохраняется, auto fresh→used. Settings Shift+F8 migration тоже удалена; обычные пользовательские настройки сохраняются.
+- UI и переводы unknown/историидо0.4 удалены. Smoke использует новую раскладку и выбирает OrcRace. Слово «custom» от пользователя означало выбранную расу: орк — стандартная раса; настоящие модовые расы пока не включены.
+- Причина0.5.0 по NPCStudio.log: DispatchMethodCall Actor.SetRace вернул false. VM/callback/Calls/Pending удалены полностью. Используем закреплённый CommonLib Actor::SwitchRace(TESRace*,bool), AE relocation37925 (SE36901), второй аргументfalse. Не придумывали offset и не меняли CommonLib.
+- Create проверяет выбранную расу, MoveTo/Enable, сохраняет желаемый raceEDID, QueueRestore. Pump ждёт Is3DLoaded, вызывает SwitchRace один раз при несовпадении расы, затем ждёт фактическую расу/3D и стабилизацию~600мс до gear. Edit сохраняет loadout и ставит такую же задачу. AfterLoad ставит её для всех активных назначений. Нет вызовов смены расы на отключённых резервных actor и бесконечного ожидания VM callback. Общая попытка ограничена40тиками/6сек.
 
-Только game-thread через Magelight PostGameTask. Actor.Get3D → NiNode traversal → BSTriShape/BSDynamicTriShape, app-cull/dismember visibility. VertexDesc и GPU staging readback, full/half position/half UV. Dynamic head float4 читается под BSSpinLock. Skinning: NiSkinData boneVert или SSE packed half4 weights+byte4 global bones; формат сверялся с nifly GetShapeBoneWeights/SSE conversion. inverse(actorRoot.world)*bone.world*skinToBone.
+## Проверки и ручной тест
 
-То же D3D11 device Skyrim, COM AddRef diffuse SRV, material UV, alpha-test, hair/face RGB tint. Простое geometric lighting. Deferred context → ExecuteCommandList(RestoreContextState=true), color readback → PNG/data URI → InteropCall. Нет Present hooks, второго устройства, перемещения NPC или камеры игры.
+Финальный полный build.bat прошёл21сек, CTest2/2, Mutagen и ZIP (root docs/v051-build.log), compiler warnings отсутствуют. Chrome smoke прошёл, screenshots Native/docs/ui-051-*.png — MOCK RENDERER. Отдельно проверены все400 slots.json:200female+200male, уникальные1202 ID, максимумE8F. Unit tests перебирают все400 номеров/пол, текущий co-save roundtrip, удаление/reuse/history, malformed identity/race и отказ от poolVersion1/2/4. WARP renderer test остаётся.
 
-Лимиты:256meshes,250kvertices/mesh,500k/scene,3million indices/scene,32MBbuffer,4096nodes/depth64,128partitions/512bones. Неподдержанные части пропускаются, число в UI/логе. Один native scene cache по identity, clear на preload/newgame. First capture синхронный и может дать hitch. Не воспроизводятся полностью FaceTint/makeup, normal/SSS, ENB/Community Shaders и прозрачные материалы.
+Дать ZIP. При закрытой игре заменить мод целиком, сохранить user-*.json/categories.json/settings.json/overwrite. Начать именно новую игру после обновления, не загрузить старый стартовый сейв. Проверить список1..200 безunknown; создать орка с одеждой, дождаться завершения операции; поменять расу существующего NPC; save/reload текущей игры. При проблемах нужны NPCStudio.log строки SwitchRace/восстановление, скрин. FaceGen пользователь ранее исправил модами — не чинить его без новой причины.
 
-Портреты генерируются постепенно для первых24 NPC отфильтрованного списка, с паузой450мс, только у загруженных моделей. Незагруженные не телепортируются — показывается силуэт. UI data URI cache, не co-save. Identity защищает от старых команд, background ошибки quiet, очередь останавливается при закрытии. Открытие сбрасывает визуальный кэш. Background portrait может заменить native scene; следующая preview команда автоматически перезахватит выбранного NPC.
+## Сохраняемые возможности и ограничения
 
-## Проверки
+Shift+8(DIK9), собственный input sink и PostGameTask Magelight. Language ru/en при первом запуске по GetUserDefaultUILanguage, затем settings.json; четыре палитры huevariables. Локализация UI/i18n, встроенных комплектов, пользовательские имена/категории и игровые itemnames не переводятся. Советы при открытии и временные toast. Типизированные настройки проверяются CTest.
 
-- Full build.bat exit0,46сек, CTest2/2, Mutagen400slots, ZIP51files.
-- После clang-format новых C++ файлов: build-native exit0, CTest2/2, pack повторён. Логи root docs/v050-{build,final-native,pack}.log. Compiler warnings отсутствуют.
-- State tests: прежние co-save/history/границы400 плюс язык системы/сохранённый выбор/миграция Shift+F8/валидация настроек.
-- preview-graphics: тот же backend на реальном WARP D3D11 device. HLSL compile, разные PNG при yaw/light, портрет, восстановление viewport. Не читает игрового NPC.
-- UI smoke: локали, палитра, race create/edit, портреты/камера, прежние операции, пять страниц720p/1080p, без горизонтального переполнения и pageerrors, close/reopen. Native/docs/ui-050-{create,roster,settings-en}.png просмотрены: это MOCK RENDERER, не Skyrim.
+40 наборов, свои категории/наборы, каталог экипировки. Capture counts/worn передpark/save, Restore существующих вещей после3D с повторной проверкой~600мс, без автодовыдачи. DynamicFF пропускаются; переносимые presets не клонируют extras/temper/custom enchant/руку. PendingPreset сохраняется до выдачи. Delete очищает ownassignment+inventory/ресурсы/StopCombat/Disable/MoveToholding/defaultname, не чужие quests/relations/AI базы. Identity и worldEpoch защищают команды. Worker150ms только coalesced main task, безRE и self-requeue.
 
-## Следующий ручной тест
+Names::Random читает Tamrielic/NND списки через VFS по полу/стандартной расе, не полный алгоритм фамилий. NND API RevealName и4SPID исключения. ЗаголовокGPL, MagelightheadersMIT. CommonLib alandtse/CommonLibVR ng8eaddedd, MSVC14.44staticCRT, AEonly1.6.1170.
 
-Сделать отдельный сейв, сохранить Equipment/user-*.json/categories.json/settings.json и MO2 overwrite. Закрыть игру, обновить ZIP целиком. Проверить Shift+8 (неF8/неNum8), язык→перезапуск, палитру. Создать Nord/Bosmer/Khajiit в одежде, сменить расу, save/load. В roster проверить целую модель/лицо/волосы/доспех/портрет, drag/zoom/light/refresh, park→summon, save/reload. Если модель неполная — нужны скриншот и NPCStudio.log со строкой «Превью:Nчастей,Mпропущено,boundsZ». Не исправлять ESP/FaceGen вместо анализа фактических buffers/skin data.
+Экспериментальный ActorPreview: собственный snapshot render загруженной модели, yaw/zoom/3lights/headportrait. Не анимации и не исходники SeverActions. Код ихnative закрыт, API/dumpbin не имеют rendererexports. Подробности root иNative docs/RENDERING_050.md. Current pose scenegraph, BSTriShape/dynamichead, boneweights, diffuse/tint, D3D11device Skyrim, deferred context ExecuteCommandList RestoreState, PNG InteropCall. Без Present hook/камеры/перемещения NPC. Ограниченный scene/vertex budget; пропущенные meshes в логе. FaceTint/makeup/normal/SSS/ENB/CS/alpha не воспроизводятся полностью. Capture может дать hitch. WARP проверяет backend, не реального NPC.
 
-## Сохраняемая основа
+Портреты первых24 отфильтрованных loadedNPC, пауза450мс, остальные силуэты; очередь останавливается приclose. JS dataURI cache, неco-save; open сбрасывает. Полный редактор головы/RaceMenu и SkyrimNet НЕ подключены. LoadCharacterPreset Papyrus нельзяNPC; будущий nativeABI нужен. SkyrimNetSDKv14PublicRequestProfileUpdate — очередь без callback/exacttext. АудитисточниковTECHNICAL_AUDIT.md.
 
-Пул200female+200male,1202формы ESL800..EEF, CELL800/XMarker801. Старые id0..159 и480 NPC_/ACHR/CLFM побайтово неизменны с0.3. Female0..79,160..279; male80..159,280..399. Старые color900+id/baseA00+id/refB00+id; новые offset=id-160,C00/D00/E00+offset. Каждое назначение получает новую identity, но повторный слот сохраняет referenceID.
-
-Co-save UID5554534E,StateTag5354534E,recordversion1,JSON poolVersion2; читает v1(160). Assignments+usedSlots+legacyHistoryUnknown. Авто fresh→unknown→used; старые свободные160 при миграции unknown. С новыми race полями для отката нужен сейв до обновления. Missing co-save guard обнаруживает enabled unassigned; если все потерянные назначения скрыты, обнаружить это пока не может.
-
-Equipment:40наборов/7категорий+свои, JSONschema1 name/category/items[plugin,localform,count]. Capture количества/надетого перед park/save; Restore существующих вещей после3D повторяется через600мс, аудит, без автодовыдачи. DynamicFF пропускается. Unique hand/temper/custom enchant не клонируются пресетами. PendingPreset хранится до успешной выдачи и возобновляется после load. Старый parked0.3 без снимка — один раз применить комплект.
-
-Delete очищает собственное назначение/инвентарь, прекращает бой, восстанавливает ресурсы, Disable/MoveToholding/defaultname. Чужие quests/relations/AI базы не чистятся. История использования остаётся. SKSE pacer150мс только ставит coalesced main-thread task, без RE в worker и self-requeue.
-
-NND RevealName+4SPIDисключения, random Tamrielic списки через VFS по полу/расе, базовое имя без полного алгоритма фамилий. NNDsource2986a406, headerGPL. Magelightv4 ABI headersMIT, минимум1.5; CommonLib alandtse/CommonLibVR ng8eaddedd, AEonly1.6.1170, MSVC14.44staticCRT.
-
-Полный head editor/RaceMenu и SkyrimNet ещё НЕ подключены. RaceMenu Papyrus LoadCharacterPreset запрещён для NPC; нужна native integration. Старый niflyviewer исключён из target. NPA закрыт. SkyrimNet SDKv14 PublicRequestProfileUpdate — очередь без callback/exact text set; ABI/exports проверять. Детали в TECHNICAL_AUDIT.md.
-
-MO2: D:/SteamLibrary/steamapps/common/Skyrim Special Edition/MO2. Лог: C:/Users/Selenter/Documents/My Games/Skyrim Special Edition/SKSE/NPCStudio.log. Пользователь меняет профиль сам: текущий HouseCarl видит Default176enabled/168active,NPCStudio.espactive. Ничего в Default не перезаписывать. Изолированный NPCStudio Development также существует.
+MO2: D:/SteamLibrary/steamapps/common/Skyrim Special Edition/MO2, пользователь меняет профиль сам. Лог C:/Users/Selenter/Documents/My Games/Skyrim Special Edition/SKSE/NPCStudio.log. В текущем логе0.5.0 также был аудит missing6из6 после bandit-melee; пользователь это сейчас не спрашивал, не считать решённым/не менять без исследования.
