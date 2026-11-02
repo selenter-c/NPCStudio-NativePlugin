@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(NPCStudio VERSION 0.4.0 LANGUAGES CXX)
+project(NPCStudio VERSION 0.5.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -21,12 +21,14 @@ add_commonlibsse_plugin(NPCStudio AUTHOR "NPCStudio" USE_ADDRESS_LIBRARY SOURCES
     src/core/StudioService.cpp
     src/core/EquipmentService.cpp
     src/core/NameCompatibility.cpp
+    src/core/RaceService.cpp
+    src/preview/ActorPreview.cpp
     src/ui/MagelightBridge.cpp
 )
 target_compile_definitions(NPCStudio PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(NPCStudio PRIVATE /utf-8 /W4 /permissive- /Zc:preprocessor)
 target_include_directories(NPCStudio PRIVATE include src)
-target_link_libraries(NPCStudio PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(NPCStudio PRIVATE nlohmann_json::nlohmann_json d3d11 d3dcompiler)
 target_precompile_headers(NPCStudio PRIVATE src/PCH.h)
 enable_testing()
 add_executable(NPCStudioStateTests tests/StateTests.cpp)
@@ -34,3 +36,11 @@ target_include_directories(NPCStudioStateTests PRIVATE src)
 target_link_libraries(NPCStudioStateTests PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(NPCStudioStateTests PRIVATE /utf-8 /Zc:preprocessor)
 add_test(NAME state-codec COMMAND NPCStudioStateTests)
+
+add_executable(NPCStudioPreviewTests tests/PreviewTests.cpp src/preview/ActorPreview.cpp)
+target_include_directories(NPCStudioPreviewTests PRIVATE src)
+target_link_libraries(NPCStudioPreviewTests PRIVATE CommonLibSSE::CommonLibSSE nlohmann_json::nlohmann_json d3d11 d3dcompiler)
+target_compile_definitions(NPCStudioPreviewTests PRIVATE NPCSTUDIO_PREVIEW_TEST WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(NPCStudioPreviewTests PRIVATE /utf-8 /W4 /permissive- /Zc:preprocessor)
+target_precompile_headers(NPCStudioPreviewTests PRIVATE src/PCH.h)
+add_test(NAME preview-graphics COMMAND NPCStudioPreviewTests)

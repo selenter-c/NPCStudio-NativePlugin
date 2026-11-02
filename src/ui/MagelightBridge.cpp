@@ -1,3 +1,4 @@
+#include "ui/SettingsCodec.h"
 #include "ui/MagelightBridge.h"
 #include "core/StudioService.h"
 #include "MagelightUI_Mod.h"
@@ -11,21 +12,22 @@ static MAGELIGHT_API::MagelightMod Host;
 static MAGELIGHT_API::ViewId View = 0;
 static std::atomic<std::uint64_t> Epoch = 0;
 
-static std::atomic<unsigned> Hotkey = 0x42;
+static std::atomic<unsigned> Hotkey = 0x09;
 static std::atomic<unsigned> Modifiers = 1;
+static std::string Language = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN ? "ru" : "en";
+static std::string Theme = "amethyst";
 static constexpr auto SettingsPath = L"Data/SKSE/Plugins/NPCStudio/settings.json";
 
-nlohmann::json Settings() { return {{"key", Hotkey.load()}, {"modifiers", Modifiers.load()}}; }
+nlohmann::json Settings() { return {{"schema", 2}, {"key", Hotkey.load()}, {"modifiers", Modifiers.load()}, {"language", Language}, {"theme", Theme}}; }
 void SaveSettings(const nlohmann::json& settings) {
-    const auto key = settings.at("key").get<unsigned>();
-    const auto modifiers = settings.at("modifiers").get<unsigned>();
-    if (key < 2 || key > 211 || modifiers > 7 || key == 0x2A || key == 0x36 || key == 0x1D || key == 0x9D || key == 0x38 || key == 0xB8)
-        throw std::runtime_error("Неверная клавиша или модификатор");
+    const auto saved = NormalizeSettings(settings, Settings());
+    const auto key = saved.at("key").get<unsigned>(), modifiers = saved.at("modifiers").get<unsigned>();
+    const auto language = saved.at("language").get<std::string>(), theme = saved.at("theme").get<std::string>();
     std::filesystem::create_directories(std::filesystem::path(SettingsPath).parent_path());
     const auto temp = std::filesystem::path(std::wstring(SettingsPath) + L".tmp");
-    { std::ofstream file(temp); file << settings.dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать настройки"); }
+    { std::ofstream file(temp); file << saved.dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать настройки"); }
     if (!MoveFileExW(temp.c_str(), SettingsPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить настройки");
-    Hotkey = key; Modifiers = modifiers;
+    Hotkey = key; Modifiers = modifiers; Language = language; Theme = theme;
 }
 
 static void Toggle(void*) {
@@ -109,14 +111,14 @@ void Initialize() {
     Host.onClose(View, [](auto) { ++Epoch; Host.v4()->ShowView(View, false); });
     Host.onError(View, [](auto, const char* error) { logger::error("Ошибка страницы NPCStudio: {}", error); Close(); });
     try {
+        auto settings = Settings();
         if (std::filesystem::exists(SettingsPath)) {
-            std::ifstream file(SettingsPath); auto settings = json::parse(file);
-            const auto key = settings.at("key").get<unsigned>();
-            const auto modifiers = settings.at("modifiers").get<unsigned>();
-            if (key >= 2 && key <= 211 && modifiers <= 7) { Hotkey = key; Modifiers = modifiers; }
+            std::ifstream file(SettingsPath); settings = json::parse(file);
+            settings = NormalizeSettings(settings, Settings(), true);
         }
-    } catch (const std::exception& e) { logger::warn("Настройки клавиш: {}", e.what()); }
+        SaveSettings(settings);
+    } catch (const std::exception& e) { logger::warn("Настройки интерфейса: {}", e.what()); }
     if (auto* input = RE::BSInputDeviceManager::GetSingleton()) input->AddEventSink(&InputSink);
-    logger::info("Интерфейс готов; клавиша {}, модификаторы {} (по умолчанию Shift+F8)", Hotkey.load(), Modifiers.load());
+    logger::info("Интерфейс готов; клавиша {}, модификаторы {} (по умолчанию Shift+8)", Hotkey.load(), Modifiers.load());
 }
 }

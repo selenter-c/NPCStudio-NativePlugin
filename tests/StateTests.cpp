@@ -1,3 +1,4 @@
+#include "ui/SettingsCodec.h"
 #include "core/StateCodec.h"
 #include <iostream>
 
@@ -10,6 +11,23 @@ int main() {
     const auto check = [](bool ok, const char* label) {
         if (!ok) { std::cerr << label << '\n'; std::exit(1); }
     };
+    using NPCStudio::UI::DefaultSettings;
+    using NPCStudio::UI::NormalizeSettings;
+    const auto ru = DefaultSettings("ru"), en = DefaultSettings("de");
+    check(ru.at("language") == "ru" && en.at("language") == "en", "Первый язык системы и английский fallback");
+    auto custom = ru; custom["language"] = "en"; custom["theme"] = "sapphire";
+    check(NormalizeSettings(json::parse(custom.dump()), ru, true) == custom, "Выбранный язык сохраняется независимо от системы");
+    const auto oldSettings = json{{"key",66},{"modifiers",1}};
+    check(NormalizeSettings(oldSettings,ru,true).at("key") == 9, "Старый стандартный Shift+F8 мигрирует в Shift+8");
+    auto customKey = oldSettings; customKey["key"] = 65;
+    check(NormalizeSettings(customKey,ru,true).at("key") == 65, "Переназначенная пользователем клавиша сохраняется");
+    auto modernKey = oldSettings; modernKey["schema"] = 2;
+    check(NormalizeSettings(modernKey,ru,true).at("key") == 66, "Явно выбранный F8 в новой версии сохраняется");
+    for (auto invalid : {json{{"key",1}}, json{{"key",42}}, json{{"modifiers",8}}, json{{"language","xx"}}, json{{"theme","bad"}}}) {
+        bool rejected = false;
+        try { NormalizeSettings(invalid,ru); } catch (...) { rejected = true; }
+        check(rejected,"Недопустимые настройки отвергаются до записи");
+    }
     auto state = json{{"poolVersion", 1}, {"assignments", {{"0", {{"name", "Элара"}}}, {"159", {{"name", "Рал"}}}}}};
     check(accepts(state), "Кириллица и крайние слоты");
     check(NPCStudio::DecodeState(state) == state["assignments"], "Состояние не изменяется при чтении");
