@@ -103,6 +103,18 @@ std::string NPCModelAssembler::GetBodyPath(RE::TESNPC* npc) {
     return "";
 }
 
+std::string NPCModelAssembler::GetVisibleBodyPath(RE::TESNPC* npc) {
+    if (!npc) return "";
+    
+    auto sex = npc->GetSex();
+    
+    if (sex == RE::SEX::kFemale) {
+        return "meshes\\actors\\character\\character assets\\femalebody.nif";
+    }
+    
+    return "meshes\\actors\\character\\character assets\\malebody.nif";
+}
+
 std::vector<std::string> NPCModelAssembler::GetHeadPartPaths(RE::TESNPC* npc) {
     std::vector<std::string> paths;
     if (!npc) return paths;
@@ -304,9 +316,19 @@ NPCAssemblyResult NPCModelAssembler::AssembleNPC(uint32_t formID) {
     
     result.bodyPath = GetBodyPath(npc);
     if (!result.bodyPath.empty()) {
-        spdlog::info("[NPC] Body path: {}", result.bodyPath);
+        spdlog::info("[NPC] Skeleton path: {}", result.bodyPath);
+    }
+    
+    std::string visibleBodyPath = GetVisibleBodyPath(npc);
+    if (!visibleBodyPath.empty()) {
+        spdlog::info("[NPC] Loading visible body mesh: {}", visibleBodyPath);
+        if (LoadAndMergeMesh(visibleBodyPath, "Body", result.meshData)) {
+            spdlog::info("[NPC] Body mesh loaded successfully");
+        } else {
+            spdlog::warn("[NPC] Failed to load body mesh: {}", visibleBodyPath);
+        }
     } else {
-        spdlog::warn("[NPC] No body path found for race={}", result.raceName);
+        spdlog::warn("[NPC] No visible body path found for sex={}", result.sexName);
     }
     
     result.headPartPaths = GetHeadPartPaths(npc);

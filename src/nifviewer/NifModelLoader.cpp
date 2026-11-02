@@ -291,6 +291,30 @@ void NifModelLoader::Unload() {
     m_lastError.clear();
 }
 
+static void ApplyTransformToVertex(Vertex& v, const nifly::MatTransform& t) {
+    nifly::Vector3 p(v.x, v.y, v.z);
+    
+    p = t.rotation * (p * t.scale) + t.translation;
+    
+    v.x = p.x;
+    v.y = p.y;
+    v.z = p.z;
+    
+    nifly::Vector3 n(v.nx, v.ny, v.nz);
+    n = t.rotation * n;
+    
+    float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    if (len > 0.0001f) {
+        n.x /= len;
+        n.y /= len;
+        n.z /= len;
+    }
+    
+    v.nx = n.x;
+    v.ny = n.y;
+    v.nz = n.z;
+}
+
 bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
     auto shapes = nif.GetShapes();
 
@@ -306,6 +330,35 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
         if (!shape) continue;
 
         std::string shapeName = shape->name.get();
+        
+        nifly::MatTransform shapeTransform;
+        bool hasTransform = false;
+        
+        auto* parentNode = nif.GetParentNode(shape);
+        if (parentNode) {
+            std::string parentName = parentNode->name.get();
+            spdlog::info("[NIF] Shape '{}' parent node: '{}'", shapeName, parentName);
+            if (!parentName.empty()) {
+                hasTransform = nif.GetNodeTransformToGlobal(parentName, shapeTransform);
+                spdlog::info("[NIF] GetNodeTransformToGlobal('{}') returned: {}", parentName, hasTransform);
+            }
+        } else {
+            spdlog::info("[NIF] Shape '{}' has no parent node", shapeName);
+        }
+        
+        if (!hasTransform) {
+            hasTransform = nif.CalcShapeTransformGlobalToSkin(shape, shapeTransform);
+            spdlog::info("[NIF] CalcShapeTransformGlobalToSkin('{}') returned: {}", shapeName, hasTransform);
+        }
+        
+        if (hasTransform) {
+            spdlog::info("[NIF] Shape '{}' final transform: pos=({:.2f},{:.2f},{:.2f}), scale={:.2f}", 
+                         shapeName, 
+                         shapeTransform.translation.x, shapeTransform.translation.y, shapeTransform.translation.z,
+                         shapeTransform.scale);
+        } else {
+            spdlog::warn("[NIF] Shape '{}' has NO transform available", shapeName);
+        }
         
         uint32_t baseVertex = static_cast<uint32_t>(m_meshData.vertices.size());
         size_t vertsBefore = m_meshData.vertices.size();
@@ -329,6 +382,11 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
                         v.x = dynTriShape->dynamicData[i].x;
                         v.y = dynTriShape->dynamicData[i].y;
                         v.z = dynTriShape->dynamicData[i].z;
+                        
+                        if (hasTransform) {
+                            ApplyTransformToVertex(v, shapeTransform);
+                        }
+                        
                         m_meshData.vertices.push_back(v);
                     }
                     
@@ -368,6 +426,10 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
                 if (i < rawUvs.size()) {
                     v.u = rawUvs[i].u;
                     v.v = rawUvs[i].v;
+                }
+
+                if (hasTransform) {
+                    ApplyTransformToVertex(v, shapeTransform);
                 }
 
                 m_meshData.vertices.push_back(v);
@@ -418,6 +480,10 @@ bool NifModelLoader::ExtractGeometry(nifly::NifFile& nif) {
             if (i < uvs.size()) {
                 v.u = uvs[i].u;
                 v.v = uvs[i].v;
+            }
+
+            if (hasTransform) {
+                ApplyTransformToVertex(v, shapeTransform);
             }
 
             m_meshData.vertices.push_back(v);

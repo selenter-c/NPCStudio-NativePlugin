@@ -65,6 +65,7 @@ public:
     
     static std::vector<std::string> GetFaceGenCandidates(RE::TESNPC* npc, uint32_t originalFormID);
     static std::string GetBodyPath(RE::TESNPC* npc);
+    static std::string GetVisibleBodyPath(RE::TESNPC* npc);
     static std::vector<std::string> GetHeadPartPaths(RE::TESNPC* npc);
     static std::vector<std::string> GetArmorPaths(RE::TESNPC* npc);
     static bool IsHumanoidWithFaceGen(RE::TESNPC* npc);
