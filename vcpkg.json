@@ -1,13 +1,15 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "npcstudio",
-  "version-string": "0.1.0",
+  "version-string": "0.2.0",
   "description": "NPC Studio - Full NPC Editor for Skyrim SE",
   "license": "MIT",
   "dependencies": [
     "fmt",
     "nlohmann-json",
     "spdlog",
-    "rapidcsv"
+    "rapidcsv",
+    "directxtk",
+    "directxmath"
   ]
 }

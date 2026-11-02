@@ -1,81 +1,50 @@
 #include "PCH.h"
+#include "core/StudioService.h"
+#include "ui/MagelightBridge.h"
 #include <spdlog/sinks/basic_file_sink.h>
-#include <filesystem>
-#include "ui/UIManager.h"
-#include "input/InputHandler.h"
 
-namespace NPCStudio {
-    constexpr const char* PLUGIN_NAME = "NPC Studio";
-    constexpr const char* PLUGIN_VERSION = "0.1.0";
-    constexpr const char* PLUGIN_AUTHOR = "Selenter";
-    constexpr const char* LOG_FILE = "NPCStudio.log";
-
-    void InitializeLog() {
-        auto path = logger::log_directory();
-        if (!path) {
-            return;
-        }
-
-        *path /= LOG_FILE;
-
-        try {
-            std::filesystem::create_directories(path->parent_path());
-
-            auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
-            auto log = std::make_shared<spdlog::logger>("global", std::move(sink));
-
-            log->set_level(spdlog::level::info);
-            log->flush_on(spdlog::level::info);
-            log->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
-
-            spdlog::set_default_logger(std::move(log));
-        } catch (...) {
-        }
-    }
-
-    void MessageHandler(SKSE::MessagingInterface::Message* a_msg) {
-        switch (a_msg->type) {
-            case SKSE::MessagingInterface::kDataLoaded:
-                logger::info("DataLoaded - all game data loaded");
-                NPCStudio::UI::UIManager::GetSingleton().Register();
-                NPCStudio::Input::InputHandler::GetSingleton()->Register();
-                logger::info("NPC Studio ready");
-                break;
-
-            case SKSE::MessagingInterface::kNewGame:
-                logger::info("NewGame started");
-                break;
-
-            case SKSE::MessagingInterface::kPostLoadGame:
-                logger::info("PostLoadGame - save loaded");
-                break;
-
-            default:
-                break;
-        }
+namespace {
+void Message(SKSE::MessagingInterface::Message* message) {
+    auto& studio = NPCStudio::StudioService::Get();
+    switch (message->type) {
+    case SKSE::MessagingInterface::kDataLoaded:
+        studio.Initialize();
+        NPCStudio::UI::Initialize();
+        break;
+    case SKSE::MessagingInterface::kPreLoadGame:
+        NPCStudio::UI::Close();
+        studio.BeforeLoad();
+        break;
+    case SKSE::MessagingInterface::kPostLoadGame:
+        studio.AfterLoad(reinterpret_cast<std::uintptr_t>(message->data) != 0);
+        break;
+    case SKSE::MessagingInterface::kNewGame:
+        studio.NewGame();
+        break;
     }
 }
+}
 
-SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
-    SKSE::Init(a_skse);
-
-    NPCStudio::InitializeLog();
-
-    logger::info("========================================");
-    logger::info("  {} v{}", NPCStudio::PLUGIN_NAME, NPCStudio::PLUGIN_VERSION);
-    logger::info("  Author: {}", NPCStudio::PLUGIN_AUTHOR);
-    logger::info("  Target: Skyrim SE 1.6.1170");
-    logger::info("========================================");
-    logger::info("Plugin loading...");
-
-    auto* messaging = SKSE::GetMessagingInterface();
-    if (!messaging->RegisterListener("SKSE", NPCStudio::MessageHandler)) {
-        logger::error("Failed to register SKSE message listener");
+SKSEPluginLoad(const SKSE::LoadInterface* skse) {
+    auto path = SKSE::log::log_directory();
+    if (!path) return false;
+    *path /= "NPCStudio.log";
+    auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+    auto log = std::make_shared<spdlog::logger>("NPCStudio", sink);
+    log->set_level(spdlog::level::info);
+    log->flush_on(spdlog::level::info);
+    spdlog::set_default_logger(log);
+    SKSE::Init(skse, false);
+    if (skse->RuntimeVersion() != REL::Version(1, 6, 1170, 0)) {
+        logger::error("Поддерживается Skyrim 1.6.1170; получен {}", skse->RuntimeVersion().string());
         return false;
     }
-
-    logger::info("SKSE message listener registered");
-    logger::info("NPC Studio loaded successfully!");
-
+    auto* serialization = SKSE::GetSerializationInterface();
+    if (!serialization || !SKSE::GetMessagingInterface()->RegisterListener("SKSE", Message)) return false;
+    serialization->SetUniqueID(0x5554534E);
+    serialization->SetSaveCallback([](auto* stream) { NPCStudio::StudioService::Get().Save(stream); });
+    serialization->SetLoadCallback([](auto* stream) { NPCStudio::StudioService::Get().Load(stream); });
+    serialization->SetRevertCallback([](auto*) { NPCStudio::StudioService::Get().Revert(); });
+    logger::info("NPCStudio 0.2.0: Magelight, постоянный пул 80+80, сохранение SKSE");
     return true;
 }
