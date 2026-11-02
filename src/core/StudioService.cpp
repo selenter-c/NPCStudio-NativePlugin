@@ -1,6 +1,7 @@
 #include "core/StudioService.h"
 #include "core/StateCodec.h"
 #include "core/EquipmentService.h"
+#include "core/NameCompatibility.h"
 #include <fstream>
 #include <unordered_set>
 
@@ -21,6 +22,8 @@ void StudioService::Initialize() {
         if (manifest.at("schemaVersion") != 1 || manifest.at("plugin") != "NPCStudio.esp" || manifest.at("slots").size() != 160)
             throw std::runtime_error("Неверный манифест пула NPCStudio");
         auto* data = RE::TESDataHandler::GetSingleton();
+        holdingAnchor = data->LookupForm<RE::TESObjectREFR>(0x801, "NPCStudio.esp");
+        if (!holdingAnchor) throw std::runtime_error("Обновите NPCStudio.esp: отсутствует точка возврата в резерв");
         std::unordered_set<RE::FormID> bases, actors;
         std::vector<Slot> resolved;
         for (const auto& entry : manifest.at("slots")) {
@@ -34,6 +37,7 @@ void StudioService::Initialize() {
                 !actors.insert(slot.actor->GetFormID()).second)
                 throw std::runtime_error("ESP и манифест слотов не совпадают");
             slot.defaultName = slot.base->GetName();
+            Names::Protect(slot.base);
             resolved.push_back(std::move(slot));
         }
         slots = std::move(resolved);
@@ -59,12 +63,12 @@ json StudioService::Snapshot() const {
         if (!assignments.contains(key)) continue;
         const auto& saved = assignments.at(key);
         slot.female ? ++females : ++males;
-        list.push_back({{"id", slot.id}, {"female", slot.female}, {"name", saved.at("name")},
+        list.push_back({{"id", slot.id}, {"female", slot.female}, {"name", saved.at("name")}, {"identity", saved.value("identity", fmt::format("slot-{}", slot.id))},
             {"parked", slot.actor->IsDisabled()}, {"dead", slot.actor->IsDead()},
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"race", slot.base->GetRace() ? slot.base->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.3.0"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.3.1"}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list},
         {"capabilities", {{"preview", false}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -87,17 +91,23 @@ json StudioService::Execute(const json& command) {
         if (it == slots.end()) throw std::runtime_error("Свободных слотов выбранного пола нет");
         auto& slot = *it;
         if (slot.actor->IsDead()) throw std::runtime_error("Резервный актёр погиб: слот требует диагностики");
-        slot.base->SetFullName(name.c_str());
-        slot.actor->SetDisplayName(RE::BSFixedString(name), true);
+        Names::Apply(slot.base, slot.actor, name);
         slot.actor->MoveTo(player);
         slot.actor->Enable(false);
-        assignments[std::to_string(slot.id)] = {{"name", name}, {"identity", fmt::format("slot-{}", slot.id)}};
+        assignments[std::to_string(slot.id)] = {{"name", name}, {"identity", fmt::format("slot-{}-{}-{}", slot.id, std::chrono::system_clock::now().time_since_epoch().count(), GetCurrentProcessId())}};
         logger::info("Создан NPC '{}' в слоте {}, reference {:08X}", name, slot.id, slot.actor->GetFormID());
     } else {
         auto& slot = Find(command.at("id").get<unsigned>());
         const auto key = std::to_string(slot.id);
         if (!assignments.contains(key)) throw std::runtime_error("Слот ещё не занят");
-        if (action == "summon") {
+        const auto identity = assignments.at(key).value("identity", fmt::format("slot-{}", slot.id));
+        if (command.contains("identity") && command.at("identity") != identity)
+            throw std::runtime_error("Персонаж в этом слоте уже изменился. Обновите список");
+        if (action == "delete") {
+            if (!command.value("confirmed", false) || command.value("identity", std::string()) != identity)
+                throw std::runtime_error("Подтвердите удаление выбранного персонажа");
+            Delete(slot);
+        } else if (action == "summon") {
             if (slot.actor->IsDead()) throw std::runtime_error("NPC погиб. Призыв не воскрешает персонажа");
             slot.actor->MoveTo(player);
             slot.actor->Enable(false);
@@ -111,8 +121,7 @@ json StudioService::Execute(const json& command) {
             auto name = command.at("name").get<std::string>();
             if (!ValidName(name))
                 throw std::runtime_error("Некорректное имя");
-            slot.base->SetFullName(name.c_str());
-            slot.actor->SetDisplayName(RE::BSFixedString(name), true);
+            Names::Apply(slot.base, slot.actor, name);
             assignments[key]["name"] = name;
         } else if (action == "equipment" || action == "giveItem" || action == "unequipItem" ||
             action == "applyEquipmentPreset" || action == "saveEquipmentPreset") {
@@ -126,6 +135,30 @@ json StudioService::Execute(const json& command) {
     return Snapshot();
 }
 
+void StudioService::Delete(Slot& slot) {
+    if (!holdingAnchor) throw std::runtime_error("Резервная точка недоступна");
+    slot.actor->StopCombat();
+    // Предметы удаляются, а не выбрасываются в мир и не передаются игроку.
+    for (auto& [object, entry] : slot.actor->GetInventory()) {
+        if (object && entry.first > 0)
+            slot.actor->RemoveItem(object, entry.first, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+    }
+    for (const auto& [object, entry] : slot.actor->GetInventory()) {
+        if (object && entry.first > 0) throw std::runtime_error("Инвентарь очищен не полностью; слот пока не освобождён");
+    }
+    if (slot.actor->IsDead()) slot.actor->Resurrect(false, false);
+    for (const auto value : {RE::ActorValue::kHealth, RE::ActorValue::kStamina, RE::ActorValue::kMagicka}) {
+        const auto damage = slot.actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, value);
+        slot.actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, value, -damage);
+    }
+    slot.actor->Disable();
+    slot.actor->MoveTo(holdingAnchor);
+    Names::Apply(slot.base, slot.actor, slot.defaultName);
+    const auto oldName = assignments.at(std::to_string(slot.id)).at("name").get<std::string>();
+    assignments.erase(std::to_string(slot.id));
+    logger::info("Удалён NPC '{}' из слота {}; reference {:08X} возвращена в резерв", oldName, slot.id, slot.actor->GetFormID());
+}
+
 void StudioService::BeforeLoad() { loaded = false; }
 
 void StudioService::RestoreNames() {
@@ -134,7 +167,8 @@ void StudioService::RestoreNames() {
         auto key = std::to_string(slot.id);
         const auto name = assignments.contains(key) ? assignments.at(key).at("name").get<std::string>() : slot.defaultName;
         slot.base->SetFullName(name.c_str());
-        if (assignments.contains(key)) slot.actor->SetDisplayName(RE::BSFixedString(name), true);
+        slot.base->shortName = name;
+        if (assignments.contains(key)) Names::Apply(slot.base, slot.actor, name);
     }
 }
 
@@ -156,6 +190,7 @@ void StudioService::AfterLoad(bool success) {
 void StudioService::NewGame() {
     assignments = json::object();
     stateValid = true;
+    if (ready) error.clear();
     loaded = true;
     RestoreNames();
 }
@@ -164,6 +199,7 @@ void StudioService::Revert() {
     // RE:: объекты здесь не изменяются: SKSE вызывает это и во время смены мира.
     loaded = false;
     stateValid = true;
+    if (ready) error.clear();
     assignments = json::object();
 }
 

@@ -22,6 +22,7 @@ private:
         std::string defaultName;
     };
     std::vector<Slot> slots;
+    RE::TESObjectREFR* holdingAnchor = nullptr;
     nlohmann::json assignments = nlohmann::json::object();
     bool ready = false;
     bool loaded = false;
@@ -30,5 +31,6 @@ private:
     nlohmann::json Snapshot() const;
     Slot& Find(unsigned id);
     void RestoreNames();
+    void Delete(Slot& slot);
 };
 }

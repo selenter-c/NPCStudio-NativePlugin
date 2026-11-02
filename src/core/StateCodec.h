@@ -27,6 +27,8 @@ inline nlohmann::json DecodeState(const nlohmann::json& saved) {
         if (parse.ec != std::errc() || parse.ptr != key.data() + key.size() || id >= 160 || std::to_string(id) != key ||
             !item.at("name").is_string() || !ValidName(item.at("name").get<std::string>()))
             throw std::runtime_error("Повреждённые данные слота");
+        if (item.contains("identity") && (!item.at("identity").is_string() || !ValidName(item.at("identity").get<std::string>())))
+            throw std::runtime_error("Повреждена личность слота");
     }
     return result;
 }

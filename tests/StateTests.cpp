@@ -23,6 +23,14 @@ int main() {
         broken["assignments"]["0"]["name"] = name;
         check(!accepts(broken), "Некорректное имя принято");
     }
+    auto removed = state;
+    removed["assignments"].erase("0");
+    check(NPCStudio::DecodeState(json::parse(removed.dump())) == removed["assignments"], "Удалённый слот возвращается после сериализации");
+    removed["assignments"]["0"] = {{"name", "Новый NPC"}, {"identity", "slot-0-new-life"}};
+    check(accepts(removed), "Повторное назначение слота не читается");
+    auto badIdentity = removed;
+    badIdentity["assignments"]["0"]["identity"] = 7;
+    check(!accepts(badIdentity), "Повреждённая личность слота принята");
     state["poolVersion"] = 2;
     check(!accepts(state), "Неизвестная версия принята");
     check(!accepts(json::object()), "Пустой co-save принят");
