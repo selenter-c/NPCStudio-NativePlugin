@@ -120,7 +120,7 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
 static void Initialize() {
     if (!Api) {
         auto module = GetModuleHandleW(L"Phantasm.dll");
-        if (!module) throw std::runtime_error("Install and enable Phantasm 0.3.0 from the supplied local dependency archive, then restart Skyrim");
+        if (!module) throw std::runtime_error("Reinstall the complete NPCStudio package including Phantasm, then restart Skyrim");
         wchar_t path[32768]{};
         if (!GetModuleFileNameW(module, path, static_cast<DWORD>(std::size(path)))) throw std::runtime_error("Cannot locate Phantasm.dll");
         if (Digest(path) != "8b9bf8341dee500c033c8777d3b616d968295676c91bbaf2946d7ae611bd7cff")
@@ -139,7 +139,7 @@ static void Initialize() {
         Api = api;
         logger::info("Превью: Phantasm 0.3.0, экспортированный API 1 проверен по SHA-256 и ABI");
     }
-    if (!Client) Check(Api->RegisterClient("NPCStudio", OnEvent, reinterpret_cast<void*>(static_cast<std::uintptr_t>(Generation)), &Client), "RegisterClient");
+    if (!Client) Check(Api->RegisterClient(P::ClientName, OnEvent, reinterpret_cast<void*>(static_cast<std::uintptr_t>(Generation)), &Client), "RegisterClient");
 }
 bool IsCurrent(std::uint64_t generation) {
     std::lock_guard lock(Guard);

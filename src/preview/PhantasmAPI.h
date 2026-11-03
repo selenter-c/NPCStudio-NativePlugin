@@ -1,7 +1,17 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <string_view>
 namespace NPCStudio::Preview::Phantasm {
+// RegisterClient допускает только [a-z0-9._-], от 1 до 24 символов.
+constexpr bool ValidClientName(std::string_view value) {
+    if (value.empty() || value.size() > 24) return false;
+    for (char c : value)
+        if (!(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '.' && c != '_' && c != '-') return false;
+    return true;
+}
+inline constexpr char ClientName[] = "npcstudio";
+static_assert(ValidClientName(ClientName));
 using Id = std::uint32_t;
 using Result = std::uint32_t;
 // Контракт восстановлен по Phantasm 0.3.0 ccf916f72d59. Другие сборки отклоняются.

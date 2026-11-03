@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -103,7 +103,8 @@ json StudioService::Execute(const json& command) {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (action == "itemPreview") {
         const auto& item = command.at("item");
-        auto* object = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESBoundObject>(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        auto* form = RE::TESDataHandler::GetSingleton()->LookupForm(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        auto* object = form ? form->As<RE::TESBoundObject>() : nullptr;
         return {{"partial", true}, {"itemPreview", Preview::ItemFrame(object, command)}};
     }
     if (action == "randomName") {
@@ -268,6 +269,7 @@ void StudioService::Pump() {
                 ++it; continue;
             }
             if (job.stage > 0 && job.stage++ < 4) { ++it; continue; }
+            Races::SynchronizeSkin(slot.actor);
             if (!job.preset.empty()) {
                 Equipment::Execute(slot.actor, {{"action", "applyEquipmentPreset"}, {"preset", job.preset}});
                 assignments[key]["loadout"] = Equipment::Capture(slot.actor);

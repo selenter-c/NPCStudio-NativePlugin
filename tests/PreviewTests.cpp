@@ -6,6 +6,9 @@ using namespace NPCStudio::Preview;
 void Require(bool value) { if (!value) throw std::runtime_error("Preview contract failure"); }
 int main() {
     try {
+        Require(Phantasm::ValidClientName("npcstudio") && Phantasm::ValidClientName("a-0._z"));
+        Require(!Phantasm::ValidClientName("NPCStudio") && !Phantasm::ValidClientName(""));
+        Require(!Phantasm::ValidClientName("name with spaces") && !Phantasm::ValidClientName(std::string(25, 'a')));
         Require(OrbitDelta(179, -179) == -2 && OrbitDelta(-179, 179) == 2);
         Require(OrbitDelta(0, 90) == -90);
         for (float zoom : {.5f, 1.f, 1.5f, 2.5f}) {

@@ -173,7 +173,8 @@ json Restore(RE::Actor* actor, const json& saved) {
     json missing = json::array();
     auto inventory = actor->GetInventory();
     for (const auto& item : saved.at("inventory")) {
-        auto* object = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESBoundObject>(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        auto* form = RE::TESDataHandler::GetSingleton()->LookupForm(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        auto* object = form ? form->As<RE::TESBoundObject>() : nullptr;
         const auto found = inventory.find(object);
         const auto count = found == inventory.end() ? 0 : std::max(0, found->second.first);
         if (count < item.at("count").get<int>()) missing.push_back({{"name", item.value("name", std::string("Предмет"))}, {"expected", item.at("count")}, {"actual", count}});
