@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.2"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -194,6 +194,7 @@ json StudioService::Execute(const json& command) {
             assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             Preview::Clear();
             assignments[key]["race"] = race->GetFormEditorID();
+            assignments[key].erase("headParts");
             QueueRestore(slot);
         } else if (action == "rename") {
             auto name = command.at("name").get<std::string>();
@@ -267,6 +268,19 @@ void StudioService::Pump() {
                     job.stage = 1;
                 }
                 ++it; continue;
+            }
+            if (!job.appearanceRestored) {
+                job.appearanceRestored = true;
+                if (assignments[key].contains("headParts")) {
+                    for (const auto& part : assignments[key]["headParts"]) {
+                        auto* head = RE::TESDataHandler::GetSingleton()->LookupForm<RE::BGSHeadPart>(part.at("form").get<unsigned>(), part.at("plugin").get<std::string>());
+                        if (head) slot.base->ChangeHeadPart(head);
+                        else logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
+                    }
+                    slot.actor->Update3DModel();
+                    job.stage = 1;
+                    ++it; continue;
+                }
             }
             if (job.stage > 0 && job.stage++ < 4) { ++it; continue; }
             Races::SynchronizeSkin(slot.actor);
@@ -347,6 +361,17 @@ void StudioService::Save(SKSE::SerializationInterface* stream) {
     for (auto& slot : slots) {
         const auto key = std::to_string(slot.id);
         if (assignments.contains(key) && !slot.actor->IsDisabled() && slot.actor->Is3DLoaded() && !restoring.contains(slot.id)) assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+    }
+    for (auto& slot : slots) {
+        const auto key = std::to_string(slot.id);
+        if (!assignments.contains(key) || restoring.contains(slot.id)) continue;
+        auto parts = json::array();
+        for (int i = 0; slot.base->headParts && i < slot.base->numHeadParts; ++i) {
+            auto* part = slot.base->headParts[i];
+            auto* file = part ? part->GetFile(0) : nullptr;
+            if (file) parts.push_back({{"plugin", file->GetFilename()}, {"form", part->GetLocalFormID()}});
+        }
+        if (!parts.empty()) assignments[key]["headParts"] = std::move(parts);
     }
     const auto text = json{{"poolVersion", 3}, {"assignments", assignments}, {"usedSlots", usedSlots}}.dump();
     if (!stream->WriteRecord(StateTag, StateVersion, text.data(), static_cast<std::uint32_t>(text.size())))

@@ -26,7 +26,7 @@ static std::uint64_t Generation = 1;
 struct LiveState {
     P::Id view = 0, form = 0;
     std::string identity, image, kind;
-    float yaw = 0, zoom = 1;
+    float yaw = 0, pitch = 0, zoom = 1;
     std::string lighting;
 };
 static LiveState Live;
@@ -158,13 +158,14 @@ void Clear() {
 static json LiveFrame(P::Id form, const std::string& identity, const json& options, bool item) {
     Initialize();
     const auto yaw = options.value("yaw", 0.f), zoom = options.value("zoom", 1.f);
+    const auto pitch = std::clamp(options.value("pitch", 0.f), -75.f, 75.f);
     const auto light = options.value("light", std::string("studio"));
     static const std::unordered_set<std::string> lights{"studio", "daylight", "hearth", "torchlight", "moonlight", "here"};
     if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(zoom) || zoom < .5f || zoom > 2.5f || !lights.contains(light))
         throw std::runtime_error("Invalid preview camera");
     P::Id old = 0, view = 0;
     bool open;
-    float previousYaw, previousZoom;
+    float previousYaw, previousPitch, previousZoom;
     std::string previousLight;
     {
         std::lock_guard lock(Guard);
@@ -175,23 +176,27 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
             Live.form = form; Live.identity = identity; Live.kind = item ? "item" : "actor";
         }
         view = Live.view;
-        previousYaw = Live.yaw; previousZoom = Live.zoom; previousLight = Live.lighting;
+        previousYaw = Live.yaw; previousPitch = Live.pitch; previousZoom = Live.zoom; previousLight = Live.lighting;
     }
     if (old) Api->CloseView(old);
     if (open) {
         if (item) Check(Api->OpenItem(Client, "item", form, 512, 512, &view), "OpenItem");
         else Check(Api->OpenActor(Client, "actor", form, 480, 640, 0, &view), "OpenActor");
+        if (!item) {
+            Check(Api->SetHint(view, "pose", "captured"), "SetHint pose");
+            Check(Api->SetHint(view, "motion", "true"), "SetHint motion");
+        }
         std::lock_guard lock(Guard);
         Live.view = view;
     }
     if (!view) throw std::runtime_error("Phantasm returned an empty view");
     // Orbit принимает градусы, Zoom — величину колеса: zoom *= pow(1.0015, delta).
-    if (yaw != previousYaw) Check(Api->Orbit(view, OrbitDelta(previousYaw, yaw), 0), "Orbit");
+    if (yaw != previousYaw || pitch != previousPitch) Check(Api->Orbit(view, OrbitDelta(previousYaw, yaw), pitch - previousPitch), "Orbit");
     if (zoom != previousZoom) Check(Api->Zoom(view, ZoomDelta(previousZoom, zoom), .5f, .5f), "Zoom");
     if (light != previousLight) Check(Api->SetHint(view, "lighting", light.c_str()), "SetHint");
     if (!open && options.value("capture", false)) Check(Api->Refresh(view), "Refresh");
     std::lock_guard lock(Guard);
-    Live.yaw = yaw; Live.zoom = zoom; Live.lighting = light;
+    Live.yaw = yaw; Live.pitch = pitch; Live.zoom = zoom; Live.lighting = light;
     return Describe(Live);
 }
 json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
