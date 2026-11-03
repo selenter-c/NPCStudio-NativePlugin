@@ -1,4 +1,5 @@
 #include "ui/SettingsCodec.h"
+#include "preview/ActorPreview.h"
 #include "ui/MagelightBridge.h"
 #include "core/StudioService.h"
 #include "MagelightUI_Mod.h"
@@ -86,8 +87,21 @@ static void OnCommand(MAGELIGHT_API::ViewId, const char* text, void*) {
     if (Host.v4()->PostGameTask(Execute, task) != MAGELIGHT_API::Result::Ok) delete task;
 }
 
+struct PreviewUpdate { json value; std::uint64_t epoch; };
+void PublishPreview(json update) {
+    if (!Host || !View) return;
+    auto task = std::make_unique<PreviewUpdate>(PreviewUpdate{std::move(update), Epoch.load()});
+    auto callback = [](void* data) {
+        std::unique_ptr<PreviewUpdate> update(static_cast<PreviewUpdate*>(data));
+        if (update->epoch != Epoch.load() || !Preview::IsCurrent(update->value.at("generation").get<std::uint64_t>())) return;
+        Host.v4()->InteropCall(View, "studioPreview", update->value.dump().c_str());
+    };
+    auto* raw = task.release();
+    if (Host.v4()->PostGameTask(callback, raw) != MAGELIGHT_API::Result::Ok) delete raw;
+}
 void Close() {
     ++Epoch;
+    Preview::Clear();
     if (!Host || !View) return;
     Host.v4()->ReleaseUIMode(Host.id());
     Host.v4()->ShowView(View, false);
@@ -108,7 +122,7 @@ void Initialize() {
     View = Host.createView("studio", page.c_str(), MAGELIGHT_API::Layer::Panel, options);
     if (!View) { logger::error("Окно NPCStudio не создано: {}", Host.v4()->GetLastErrorMessage(Host.id())); return; }
     Host.v4()->RegisterJSListenerEx(View, "studioCommand", OnCommand, nullptr);
-    Host.onClose(View, [](auto) { ++Epoch; Host.v4()->ShowView(View, false); });
+    Host.onClose(View, [](auto) { ++Epoch; Preview::Clear(); Host.v4()->ShowView(View, false); });
     Host.onError(View, [](auto, const char* error) { logger::error("Ошибка страницы NPCStudio: {}", error); Close(); });
     try {
         auto settings = Settings();

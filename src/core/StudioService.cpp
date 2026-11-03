@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.5.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -94,12 +94,18 @@ json StudioService::Snapshot() const {
 json StudioService::Execute(const json& command) {
     const auto action = command.at("action").get<std::string>();
     if (action == "state") return Snapshot();
+    if (action == "previewStop") { Preview::Clear(); return {{"partial", true}}; }
     if (action == "saveSettings") { UI::SaveSettings(command.at("settings")); return Snapshot(); }
     if (action == "addCategory") { Equipment::AddCategory(command.at("name").get<std::string>()); return Snapshot(); }
     if (!ready || !stateValid) throw std::runtime_error(error.empty() ? "Пул недоступен" : error);
     if (!loaded || !RE::PlayerCharacter::GetSingleton()->GetParentCell())
         throw std::runtime_error("Сначала загрузите сохранение или начните новую игру");
     auto* player = RE::PlayerCharacter::GetSingleton();
+    if (action == "itemPreview") {
+        const auto& item = command.at("item");
+        auto* object = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESBoundObject>(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
+        return {{"partial", true}, {"itemPreview", Preview::ItemFrame(object, command)}};
+    }
     if (action == "randomName") {
         bool female = command.value("female", true);
         RE::TESNPC* base = nullptr;
@@ -159,7 +165,7 @@ json StudioService::Execute(const json& command) {
             if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
             auto options = command; options["portraitOnly"] = action == "portrait";
             auto preview = Preview::Frame(slot.actor, identity, options);
-            auto state = Snapshot(); state[action == "portrait" ? "portrait" : "preview"] = std::move(preview); return state;
+            return {{"partial", true}, {action == "portrait" ? "portrait" : "preview", std::move(preview)}};
         } else if (action == "delete") {
             if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
             if (!command.value("confirmed", false) || command.value("identity", std::string()) != identity)
@@ -176,6 +182,7 @@ json StudioService::Execute(const json& command) {
             if (slot.actor->IsDisabled()) return Snapshot();
             if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
             assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+            Preview::Clear();
             slot.actor->Disable();
         } else if (action == "teleport") {
             if (slot.actor->IsDisabled()) throw std::runtime_error("NPC убран из мира. Сначала призовите его");
@@ -184,6 +191,7 @@ json StudioService::Execute(const json& command) {
             if (slot.actor->IsDisabled() || slot.actor->IsDead() || restoring.contains(slot.id)) throw std::runtime_error("NPC is not ready for a race change");
             auto* race = Races::Resolve(command.at("race").get<std::string>());
             assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+            Preview::Clear();
             assignments[key]["race"] = race->GetFormEditorID();
             QueueRestore(slot);
         } else if (action == "rename") {
