@@ -33,6 +33,19 @@ static LiveState Live;
 struct PortraitRequest { std::string identity; std::uint64_t generation; };
 static std::unordered_map<std::uintptr_t, PortraitRequest> Portraits;
 static std::uintptr_t NextPortrait = 0;
+static std::filesystem::path PortraitPath(const std::string& identity) {
+    if (identity.empty() || identity.size() > 120 || identity.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos)
+        throw std::runtime_error("Invalid portrait identity");
+    return std::filesystem::path("Data/SKSE/Plugins/NPCStudio/Portraits") / (identity + ".image");
+}
+void SavePortrait(const std::string& identity, const std::string& image) {
+    if (!image.starts_with("data:image/png;base64,") || image.size() > 2000000) throw std::runtime_error("Invalid portrait image");
+    const auto path = PortraitPath(identity);
+    std::filesystem::create_directories(path.parent_path());
+    const auto temp = std::filesystem::path(path.wstring() + L".tmp");
+    { std::ofstream file(temp, std::ios::binary); file << image; file.flush(); if (!file) throw std::runtime_error("Cannot save portrait"); }
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Cannot replace portrait");
+}
 static json Describe(const LiveState& state) {
     return {{"identity", state.identity}, {"kind", state.kind}, {"image", state.image},
         {"pending", state.image.empty()}, {"backend", "Phantasm 0.3.0"}};
@@ -118,6 +131,7 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         if (!png) return;
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
+        SavePortrait(request.identity, image);
         UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"portrait", image}, {"generation", request.generation}});
     } catch (...) { logger::warn("Phantasm: callback портрета отклонён"); }
 }
@@ -207,6 +221,12 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     if (!actor || actor->IsDisabled() || actor->IsDead() || !actor->Is3DLoaded())
         throw std::runtime_error("NPC model is not loaded. Summon the character first");
     if (!options.value("portraitOnly", false)) return LiveFrame(actor->GetFormID(), identity, options, false);
+    const auto path = PortraitPath(identity);
+    if (!options.value("capture", false) && std::filesystem::exists(path) && std::filesystem::file_size(path) < 2000000) {
+        std::ifstream file(path, std::ios::binary);
+        std::string image((std::istreambuf_iterator<char>(file)), {});
+        if (image.starts_with("data:image/png;base64,")) return {{"identity", identity}, {"kind", "portrait"}, {"portrait", image}};
+    }
     Initialize();
     std::uintptr_t ticket;
     P::Id closeView = 0;

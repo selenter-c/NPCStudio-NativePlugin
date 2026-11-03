@@ -21,6 +21,8 @@ inline nlohmann::json NormalizeSettings(const nlohmann::json &input, const nlohm
         throw std::runtime_error("Unsupported language");
     if (theme != "amethyst" && theme != "emerald" && theme != "sapphire" && theme != "ember")
         throw std::runtime_error("Unsupported theme");
-    return {{"schema", 2}, {"key", key}, {"modifiers", modifiers}, {"language", language}, {"theme", theme}};
+    const auto scale = input.value("scale", 1.0);
+    if (!std::isfinite(scale) || scale < .6 || scale > 1.) throw std::runtime_error("Invalid UI scale");
+    return {{"schema", 2}, {"key", key}, {"modifiers", modifiers}, {"language", language}, {"theme", theme}, {"scale", scale}};
 }
 } // namespace NPCStudio::UI

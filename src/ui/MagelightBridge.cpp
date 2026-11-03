@@ -23,9 +23,10 @@ static std::atomic<unsigned> Hotkey = 0x09;
 static std::atomic<unsigned> Modifiers = 1;
 static std::string Language = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN ? "ru" : "en";
 static std::string Theme = "amethyst";
+static double Scale = 1.;
 static constexpr auto SettingsPath = L"Data/SKSE/Plugins/NPCStudio/settings.json";
 
-nlohmann::json Settings() { return {{"schema", 2}, {"key", Hotkey.load()}, {"modifiers", Modifiers.load()}, {"language", Language}, {"theme", Theme}}; }
+nlohmann::json Settings() { return {{"schema", 2}, {"key", Hotkey.load()}, {"modifiers", Modifiers.load()}, {"language", Language}, {"theme", Theme}, {"scale", Scale}}; }
 void SaveSettings(const nlohmann::json& settings) {
     const auto saved = NormalizeSettings(settings, Settings());
     const auto key = saved.at("key").get<unsigned>(), modifiers = saved.at("modifiers").get<unsigned>();
@@ -35,6 +36,7 @@ void SaveSettings(const nlohmann::json& settings) {
     { std::ofstream file(temp); file << saved.dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать настройки"); }
     if (!MoveFileExW(temp.c_str(), SettingsPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить настройки");
     Hotkey = key; Modifiers = modifiers; Language = language; Theme = theme;
+    Scale = saved.at("scale").get<double>();
 }
 
 static void Toggle(void*) {
@@ -85,7 +87,7 @@ static void Execute(void* data) {
 }
 
 static void OnCommand(MAGELIGHT_API::ViewId, const char* text, void*) {
-    if (!text || std::strlen(text) > 65536) return;
+    if (!text || std::strlen(text) > 2100000) return;
     auto command = std::make_unique<Command>();
     command->text = text;
     command->epoch = Epoch.load();

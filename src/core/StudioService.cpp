@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.4"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.5"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -162,7 +162,10 @@ json StudioService::Execute(const json& command) {
         const auto identity = assignments.at(key).at("identity").get<std::string>();
         if (command.contains("identity") && command.at("identity") != identity)
             throw std::runtime_error("Персонаж в этом слоте уже изменился. Обновите список");
-        if (action == "preview" || action == "portrait") {
+        if (action == "savePortrait") {
+            Preview::SavePortrait(identity, command.at("image").get<std::string>());
+            return {{"partial", true}};
+        } else if (action == "preview" || action == "portrait") {
             if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
             auto options = command; options["portraitOnly"] = action == "portrait";
             auto preview = Preview::Frame(slot.actor, identity, options);
