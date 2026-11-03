@@ -108,6 +108,7 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         if (!still || still->size < sizeof(P::Still) || !still->ok || !still->pixels ||
             still->width == 0 || still->height == 0 || still->width > 1024 || still->height > 1024) {
             logger::warn("Портрет отклонён: ok={}, size={}x{}, reason={}", still ? still->ok : false, still ? still->width : 0, still ? still->height : 0, still && still->reason ? still->reason : "no callback");
+            UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"error", still && still->reason ? still->reason : "Portrait failed"}, {"generation", request.generation}});
             return;
         }
         // Readback провайдера упаковывает строки в width*4. Поле metadata не является RowPitch.
@@ -208,12 +209,17 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     if (!options.value("portraitOnly", false)) return LiveFrame(actor->GetFormID(), identity, options, false);
     Initialize();
     std::uintptr_t ticket;
+    P::Id closeView = 0;
     {
         std::lock_guard lock(Guard);
-        if (Portraits.size() >= 4) throw std::runtime_error("Portrait queue is full");
+        if (!Portraits.empty()) throw std::runtime_error("Portrait queue is full");
+        closeView = Live.view;
+        Live = {};
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation});
     }
+    // Still и живой вид делят renderer: очередь закрытия должна идти первой.
+    if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
     P::Id request = 0;
     const auto result = Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
     if (result != 0) {

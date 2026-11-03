@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.3"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.4"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -195,6 +195,8 @@ json StudioService::Execute(const json& command) {
             Preview::Clear();
             assignments[key]["race"] = race->GetFormEditorID();
             assignments[key].erase("headParts");
+            assignments[key].erase("faceMorphs");
+            assignments[key].erase("facePresets");
             QueueRestore(slot);
         } else if (action == "rename") {
             auto name = command.at("name").get<std::string>();
@@ -206,6 +208,11 @@ json StudioService::Execute(const json& command) {
             action == "applyEquipmentPreset" || action == "saveEquipmentPreset") {
             if (restoring.contains(slot.id)) throw std::runtime_error("Снаряжение ещё восстанавливается");
             Equipment::Execute(slot.actor, command);
+            if (action == "giveItem" || action == "unequipItem" || action == "applyEquipmentPreset") {
+                settlingTicks = 3;
+                workPending = true;
+                UI::SetWorldWork(true);
+            }
             if (action != "equipment") assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             auto state = Snapshot();
             state["equipment"] = Equipment::Describe(slot.actor, command);
@@ -249,9 +256,11 @@ void StudioService::QueueRestore(Slot& slot, const std::string& preset) {
     restoring[slot.id] = {assignments.at(key).at("identity").get<std::string>(), assignments.at(key).value("pendingPreset", std::string())};
     assignments[key]["warning"] = "Восстановление снаряжения…";
     workPending = true;
+    UI::SetWorldWork(true);
 }
 void StudioService::Pump() {
-    if (!loaded || !stateValid) { restoring.clear(); workPending = false; return; }
+    if (!loaded || !stateValid) { restoring.clear(); workPending = false; UI::SetWorldWork(false); return; }
+    if (settlingTicks) --settlingTicks;
     for (auto it = restoring.begin(); it != restoring.end();) {
         auto& slot = Find(it->first);
         auto& job = it->second;
@@ -269,10 +278,23 @@ void StudioService::Pump() {
                 }
                 ++it; continue;
             }
+            if (job.stage > 0 && job.stage++ < 4) { ++it; continue; }
             if (!job.appearanceRestored) {
                 job.appearanceRestored = true;
                 // RNAM базы не обязан сохраняться вместе с runtime-расой Actor.
                 slot.base->race = targetRace;
+                // Как в RaceMenu: сначала базовый набор расы, затем сохранённые части.
+                auto* face = targetRace->faceRelatedData[slot.female ? 1 : 0];
+                if (!face || !face->headParts || face->headParts->empty() || face->headParts->size() > 127)
+                    throw std::runtime_error("Race has no valid default head parts");
+                auto* parts = RE::calloc<RE::BGSHeadPart*>(face->headParts->size());
+                if (!parts) throw std::bad_alloc();
+                std::copy(face->headParts->begin(), face->headParts->end(), parts);
+                RE::free(slot.base->headParts);
+                slot.base->headParts = parts;
+                slot.base->numHeadParts = static_cast<std::int8_t>(face->headParts->size());
+                slot.base->originalRace = nullptr;
+                slot.base->faceNPC = nullptr;
                 logger::info("Восстановление внешности слота {}: actor={}, base={}, headParts={}", slot.id, targetRace->GetFormEditorID(), slot.base->race->GetFormEditorID(), slot.base->numHeadParts);
                 if (assignments[key].contains("headParts")) {
                     for (const auto& part : assignments[key]["headParts"]) {
@@ -280,12 +302,22 @@ void StudioService::Pump() {
                         if (head) slot.base->ChangeHeadPart(head);
                         else logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
                     }
-                    slot.actor->Update3DModel();
-                    job.stage = 1;
-                    ++it; continue;
                 }
+                if (assignments[key].contains("faceMorphs")) {
+                    const auto& morphs = assignments[key]["faceMorphs"];
+                    const auto& presets = assignments[key].at("facePresets");
+                    if (morphs.size() == 19 && presets.size() == 4) {
+                        if (!slot.base->faceData) slot.base->faceData = RE::calloc<RE::TESNPC::FaceData>(1);
+                        if (!slot.base->faceData) throw std::bad_alloc();
+                        for (unsigned i = 0; i < 19; ++i) slot.base->faceData->morphs[i] = morphs[i].get<float>();
+                        for (unsigned i = 0; i < 4; ++i) slot.base->faceData->parts[i] = presets[i].get<int>();
+                    }
+                }
+                // Update3DModel обновляет экипировку; DoReset3D пересобирает также FaceGen.
+                slot.actor->DoReset3D(false);
+                job.stage = 1;
+                ++it; continue;
             }
-            if (job.stage > 0 && job.stage++ < 4) { ++it; continue; }
             Races::SynchronizeSkin(slot.actor);
             if (!job.preset.empty()) {
                 Equipment::Execute(slot.actor, {{"action", "applyEquipmentPreset"}, {"preset", job.preset}});
@@ -305,9 +337,10 @@ void StudioService::Pump() {
             it = restoring.erase(it);
         } catch (const std::exception& e) { assignments[key]["warning"] = e.what(); logger::warn("Восстановление слот {}: {}", slot.id, e.what()); it = restoring.erase(it); }
     }
-    workPending = !restoring.empty();
+    workPending = !restoring.empty() || settlingTicks > 0;
+    UI::SetWorldWork(workPending.load());
 }
-void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; restoring.clear(); workPending = false; loaded = false; }
+void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; restoring.clear(); settlingTicks = 0; workPending = false; loaded = false; UI::SetWorldWork(false); }
 
 void StudioService::RestoreNames() {
     if (!ready || !stateValid) return;
@@ -340,6 +373,8 @@ void StudioService::AfterLoad(bool success) {
 }
 
 void StudioService::NewGame() {
+    settlingTicks = 0;
+    UI::SetWorldWork(false);
     Preview::Clear();
     assignments = json::object();
     usedSlots.clear(); restoring.clear(); workPending = false;
@@ -375,6 +410,10 @@ void StudioService::Save(SKSE::SerializationInterface* stream) {
             if (file) parts.push_back({{"plugin", file->GetFilename()}, {"form", part->GetLocalFormID()}});
         }
         if (!parts.empty()) assignments[key]["headParts"] = std::move(parts);
+        if (slot.base->faceData) {
+            assignments[key]["faceMorphs"] = slot.base->faceData->morphs;
+            assignments[key]["facePresets"] = slot.base->faceData->parts;
+        }
     }
     const auto text = json{{"poolVersion", 3}, {"assignments", assignments}, {"usedSlots", usedSlots}}.dump();
     if (!stream->WriteRecord(StateTag, StateVersion, text.data(), static_cast<std::uint32_t>(text.size())))

@@ -12,6 +12,12 @@ using json = nlohmann::json;
 static MAGELIGHT_API::MagelightMod Host;
 static MAGELIGHT_API::ViewId View = 0;
 static std::atomic<std::uint64_t> Epoch = 0;
+static bool WorldWork = false;
+void SetWorldWork(bool pending) {
+    WorldWork = pending;
+    if (Host && View && Host.v4()->GetUIModeOwner() == Host.id())
+        Host.v4()->RequestUIMode(View, pending ? 0 : MAGELIGHT_API::kUIModeFlagPause);
+}
 
 static std::atomic<unsigned> Hotkey = 0x09;
 static std::atomic<unsigned> Modifiers = 1;
@@ -38,7 +44,7 @@ static void Toggle(void*) {
     auto state = StudioService::Get().Execute({{"action", "state"}});
     if (!state.value("worldLoaded", false) || !ui || ui->GameIsPaused() || ui->IsMenuOpen(RE::Console::MENU_NAME) ||
         ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return;
-    Host.v4()->RequestUIMode(View, 0);
+    Host.v4()->RequestUIMode(View, WorldWork ? 0 : MAGELIGHT_API::kUIModeFlagPause);
 }
 class HotkeySink : public RE::BSTEventSink<RE::InputEvent*> {
 public:

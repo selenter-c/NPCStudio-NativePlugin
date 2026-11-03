@@ -32,6 +32,7 @@ private:
     std::set<unsigned> usedSlots;
     struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; bool raceRequested = false; bool appearanceRestored = false; };
     std::map<unsigned, RestoreJob> restoring;
+    unsigned settlingTicks = 0;
     std::atomic<bool> workPending = false;
     std::atomic<bool> taskQueued = false;
     std::atomic<unsigned> worldEpoch = 0;
