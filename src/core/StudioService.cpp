@@ -82,11 +82,11 @@ json StudioService::Snapshot() const {
         const auto& saved = assignments.at(key);
         slot.female ? ++females : ++males;
         list.push_back({{"id", slot.id}, {"female", slot.female}, {"number", SlotNumber(slot.id)}, {"warning", saved.value("warning", std::string())}, {"audit", saved.value("audit", json::object())}, {"restoring", restoring.contains(slot.id)}, {"name", saved.at("name")}, {"identity", saved.at("identity").get<std::string>()},
-            {"parked", slot.actor->IsDisabled()}, {"dead", slot.actor->IsDead()},
+            {"location", slot.actor->GetParentCell() ? std::string(slot.actor->GetParentCell()->GetName()) : std::string()}, {"parked", slot.actor->IsDisabled()}, {"dead", slot.actor->IsDead()},
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.2"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.6.3"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -271,6 +271,9 @@ void StudioService::Pump() {
             }
             if (!job.appearanceRestored) {
                 job.appearanceRestored = true;
+                // RNAM базы не обязан сохраняться вместе с runtime-расой Actor.
+                slot.base->race = targetRace;
+                logger::info("Восстановление внешности слота {}: actor={}, base={}, headParts={}", slot.id, targetRace->GetFormEditorID(), slot.base->race->GetFormEditorID(), slot.base->numHeadParts);
                 if (assignments[key].contains("headParts")) {
                     for (const auto& part : assignments[key]["headParts"]) {
                         auto* head = RE::TESDataHandler::GetSingleton()->LookupForm<RE::BGSHeadPart>(part.at("form").get<unsigned>(), part.at("plugin").get<std::string>());

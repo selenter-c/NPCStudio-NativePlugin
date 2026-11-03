@@ -106,11 +106,14 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
             if (request.generation != Generation) return;
         }
         if (!still || still->size < sizeof(P::Still) || !still->ok || !still->pixels ||
-            !ValidPortrait(still->width, still->height)) return;
+            still->width == 0 || still->height == 0 || still->width > 1024 || still->height > 1024) {
+            logger::warn("Портрет отклонён: ok={}, size={}x{}, reason={}", still ? still->ok : false, still ? still->width : 0, still ? still->height : 0, still && still->reason ? still->reason : "no callback");
+            return;
+        }
         // Readback провайдера упаковывает строки в width*4. Поле metadata не является RowPitch.
         // Пиксели принадлежат провайдеру только до возврата callback.
         int size = 0;
-        auto* png = stbi_write_png_to_mem(still->pixels, 144 * 4, 144, 144, 4, &size);
+        auto* png = stbi_write_png_to_mem(still->pixels, still->width * 4, still->width, still->height, 4, &size);
         if (!png) return;
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
