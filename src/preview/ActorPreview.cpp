@@ -27,10 +27,11 @@ struct LiveState {
     P::Id view = 0, form = 0;
     std::string identity, image, kind;
     float yaw = 0, pitch = 0, zoom = 1;
+    float panX = 0, panY = 0;
     std::string lighting;
 };
 static LiveState Live;
-struct PortraitRequest { std::string identity; std::uint64_t generation; };
+struct PortraitRequest { std::string identity; std::uint64_t generation; float x = 0, y = 0, size = 1; bool crop = false; };
 static std::unordered_map<std::uintptr_t, PortraitRequest> Portraits;
 static std::uintptr_t NextPortrait = 0;
 static std::filesystem::path PortraitPath(const std::string& identity) {
@@ -127,7 +128,19 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         // Readback провайдера упаковывает строки в width*4. Поле metadata не является RowPitch.
         // Пиксели принадлежат провайдеру только до возврата callback.
         int size = 0;
-        auto* png = stbi_write_png_to_mem(still->pixels, still->width * 4, still->width, still->height, 4, &size);
+        std::vector<unsigned char> cropped;
+        const auto* pixels = still->pixels;
+        unsigned width = still->width, height = still->height;
+        if (request.crop) {
+            cropped.resize(256 * 256 * 4);
+            for (unsigned y = 0; y < 256; ++y) for (unsigned x = 0; x < 256; ++x) {
+                const auto sx = std::clamp(int((request.x + x / 256.f * request.size) * width), 0, int(width) - 1);
+                const auto sy = std::clamp(int((request.y + y / 256.f * request.size * width / height) * height), 0, int(height) - 1);
+                std::memcpy(cropped.data() + (y * 256 + x) * 4, pixels + (sy * width + sx) * 4, 4);
+            }
+            pixels = cropped.data(); width = height = 256;
+        }
+        auto* png = stbi_write_png_to_mem(pixels, width * 4, width, height, 4, &size);
         if (!png) return;
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
@@ -178,6 +191,9 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     const auto yaw = options.value("yaw", 0.f), zoom = options.value("zoom", 1.f);
     const auto pitch = std::clamp(options.value("pitch", 0.f), -75.f, 75.f);
     const auto light = options.value("light", std::string("studio"));
+    const auto panX = std::clamp(options.value("panX", 0.f), -.4f, .4f);
+    const auto panY = std::clamp(options.value("panY", 0.f), -.4f, .4f);
+    if (!std::isfinite(panX) || !std::isfinite(panY)) throw std::runtime_error("Invalid camera offset");
     static const std::unordered_set<std::string> lights{"studio", "daylight", "hearth", "torchlight", "moonlight", "here"};
     if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(zoom) || zoom < .5f || zoom > 2.5f || !lights.contains(light))
         throw std::runtime_error("Invalid preview camera");
@@ -210,11 +226,23 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     if (!view) throw std::runtime_error("Phantasm returned an empty view");
     // Orbit принимает градусы, Zoom — величину колеса: zoom *= pow(1.0015, delta).
     if (yaw != previousYaw || pitch != previousPitch) Check(Api->Orbit(view, OrbitDelta(previousYaw, yaw), pitch - previousPitch), "Orbit");
-    if (zoom != previousZoom) Check(Api->Zoom(view, ZoomDelta(previousZoom, zoom), .5f, .5f), "Zoom");
+    const auto cameraScale = [](float value) { return .95f - (value - .5f) * .225f; };
+    // При возврате scale к 1 провайдер сбрасывает цель камеры; следующий anchored zoom задаёт её заново.
+    // Это перемещение внутри renderer: HTML-текстура остаётся на месте.
+    float oldPanX, oldPanY;
+    { std::lock_guard lock(Guard); oldPanX = Live.panX; oldPanY = Live.panY; }
+    if (open || zoom != previousZoom || panX != oldPanX || panY != oldPanY) {
+        const auto scale = cameraScale(zoom);
+        if (!open) Check(Api->Zoom(view, ZoomDelta(cameraScale(previousZoom), 1.f), .5f, .5f), "Reset camera target");
+        const auto u = std::clamp(.5f - panX * scale / (1.f - scale), 0.f, 1.f);
+        const auto v = std::clamp(.5f - panY * scale / (1.f - scale), 0.f, 1.f);
+        Check(Api->Zoom(view, ZoomDelta(1.f, scale), u, v), "Position camera target");
+    }
     if (light != previousLight) Check(Api->SetHint(view, "lighting", light.c_str()), "SetHint");
     if (!open && options.value("capture", false)) Check(Api->Refresh(view), "Refresh");
     std::lock_guard lock(Guard);
     Live.yaw = yaw; Live.pitch = pitch; Live.zoom = zoom; Live.lighting = light;
+    Live.panX = panX; Live.panY = panY;
     return Describe(Live);
 }
 json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
@@ -237,11 +265,27 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
         Live = {};
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation});
+        if (options.value("editorCapture", false)) {
+            auto& shot = Portraits.at(ticket);
+            shot.crop = true;
+            shot.x = std::clamp(options.value("cropX", 0.f), 0.f, 1.f);
+            shot.y = std::clamp(options.value("cropY", 0.f), 0.f, 1.f);
+            shot.size = std::clamp(options.value("cropSize", .5f), .05f, 1.f);
+            const auto scale = .95f - (std::clamp(options.value("zoom", 1.f), .5f, 2.5f) - .5f) * .225f;
+            const auto px = std::clamp(options.value("panX", 0.f), -.4f, .4f);
+            const auto py = std::clamp(options.value("panY", 0.f), -.4f, .4f);
+            shot.x = .5f + (shot.x - .5f - px) * scale;
+            shot.y = .5f + (shot.y - .5f - py) * scale;
+            shot.size *= scale;
+        }
     }
     // Still и живой вид делят renderer: очередь закрытия должна идти первой.
     if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
     P::Id request = 0;
-    const auto result = Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
+    const auto hints = fmt::format("turn={};pitch={};lighting={}", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
+    const auto result = options.value("editorCapture", false) ?
+        Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 0, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
+        Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
     if (result != 0) {
         std::lock_guard lock(Guard);
         Portraits.erase(ticket);
