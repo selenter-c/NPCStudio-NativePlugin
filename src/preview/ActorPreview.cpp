@@ -257,15 +257,20 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     Live.panX = panX; Live.panY = panY;
     return Describe(Live);
 }
+std::string ReadPortrait(const std::string& identity) {
+    const auto path = PortraitPath(identity);
+    if (!std::filesystem::exists(path) || std::filesystem::file_size(path) >= 2000000) return {};
+    std::ifstream file(path, std::ios::binary);
+    std::string image((std::istreambuf_iterator<char>(file)), {});
+    return image.starts_with("data:image/png;base64,") ? image : std::string();
+}
 json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     if (!actor || actor->IsDisabled() || actor->IsDead() || !actor->Is3DLoaded())
         throw std::runtime_error("NPC model is not loaded. Summon the character first");
     if (!options.value("portraitOnly", false)) return LiveFrame(actor->GetFormID(), identity, options, false);
-    const auto path = PortraitPath(identity);
-    if (!options.value("capture", false) && std::filesystem::exists(path) && std::filesystem::file_size(path) < 2000000) {
-        std::ifstream file(path, std::ios::binary);
-        std::string image((std::istreambuf_iterator<char>(file)), {});
-        if (image.starts_with("data:image/png;base64,")) return {{"identity", identity}, {"kind", "portrait"}, {"portrait", image}};
+    if (!options.value("capture", false)) {
+        auto image = ReadPortrait(identity);
+        if (!image.empty()) return {{"identity", identity}, {"kind", "portrait"}, {"portrait", image}};
     }
     Initialize();
     const bool editorCapture = options.value("editorCapture", false);

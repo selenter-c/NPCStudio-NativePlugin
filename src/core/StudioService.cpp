@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.6.9"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.7.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -94,6 +94,21 @@ json StudioService::Snapshot() const {
 json StudioService::Execute(const json& command) {
     const auto action = command.at("action").get<std::string>();
     if (action == "state") return Snapshot();
+    if (action == "portraitCache") {
+        const auto& identities = command.at("identities");
+        if (!identities.is_array() || identities.size() > 24) throw std::runtime_error("Invalid portrait batch");
+        json images = json::object();
+        for (const auto& identity : identities) {
+            const auto key = identity.get<std::string>();
+            for (const auto& saved : assignments.items()) {
+                if (saved.value().at("identity") != key) continue;
+                auto image = Preview::ReadPortrait(key);
+                if (!image.empty()) images[key] = std::move(image);
+                break;
+            }
+        }
+        return {{"partial", true}, {"portraits", images}};
+    }
     if (action == "previewStop") { Preview::Clear(); return {{"partial", true}}; }
     if (action == "saveSettings") { UI::SaveSettings(command.at("settings")); return Snapshot(); }
     if (action == "addCategory") { Equipment::AddCategory(command.at("name").get<std::string>()); return Snapshot(); }

@@ -55,9 +55,23 @@ static std::wstring Fold(std::string_view text) {
     return wide;
 }
 
+static std::string Category(RE::TESForm* form) {
+    auto* armor = form->As<RE::TESObjectARMO>();
+    if (!armor) return form->Is(RE::FormType::Weapon) ? "weapon" : "ammo";
+    using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+    if (armor->IsShield()) return "shield";
+    if (armor->HasPartOf(Slot::kBody)) return "body";
+    if (armor->HasPartOf(Slot::kHead) || armor->HasPartOf(Slot::kHair) || armor->HasPartOf(Slot::kCirclet)) return "head";
+    if (armor->HasPartOf(Slot::kHands) || armor->HasPartOf(Slot::kForearms)) return "hands";
+    if (armor->HasPartOf(Slot::kFeet) || armor->HasPartOf(Slot::kCalves)) return "feet";
+    if (armor->HasPartOf(Slot::kRing) || armor->HasPartOf(Slot::kAmulet)) return "jewelry";
+    return "other";
+}
+
 static json ItemInfo(RE::TESBoundObject* form, int count, bool worn) {
     auto item = Address(form);
     item["name"] = form->GetName();
+    item["category"] = Category(form);
     item["count"] = count;
     item["worn"] = worn;
     item["kind"] = form->Is(RE::FormType::Armor) ? "armor" : form->Is(RE::FormType::Weapon) ? "weapon" : "ammo";
@@ -121,16 +135,20 @@ json Describe(RE::Actor* actor, const json& command) {
     const auto query = Fold(command.value("query", std::string()));
     if (query.size() > 80) throw std::runtime_error("Слишком длинный поисковый запрос");
     const auto kind = command.value("kind", std::string("armor"));
-    auto type = kind == "weapon" ? RE::FormType::Weapon : kind == "ammo" ? RE::FormType::Ammo : RE::FormType::Armor;
-    auto& forms = RE::TESDataHandler::GetSingleton()->GetFormArray(type);
+    const auto category = command.value("category", std::string());
     unsigned matches = 0;
-    for (auto* form : forms) {
-        if (!Supported(form) || !form->GetPlayable() || !form->GetName() || !*form->GetName()) continue;
-        auto* file = form->GetFile(0);
-        if (!file || (form->GetFormID() >> 24) == 0xFF) continue;
-        if (!query.empty() && Fold(std::string(form->GetName()) + " " + std::string(file->GetFilename())).find(query) == std::wstring::npos) continue;
-        ++matches;
-        if (catalog.size() < 100) catalog.push_back(ItemInfo(form->As<RE::TESBoundObject>(), 1, false));
+    for (const auto type : {RE::FormType::Armor, RE::FormType::Weapon, RE::FormType::Ammo}) {
+        const auto typeKind = type == RE::FormType::Armor ? "armor" : type == RE::FormType::Weapon ? "weapon" : "ammo";
+        if (!kind.empty() && kind != "all" && kind != typeKind) continue;
+        for (auto* form : RE::TESDataHandler::GetSingleton()->GetFormArray(type)) {
+            if (!Supported(form) || !form->GetPlayable() || !form->GetName() || !*form->GetName()) continue;
+            auto* file = form->GetFile(0);
+            if (!file || (form->GetFormID() >> 24) == 0xFF) continue;
+            if (!query.empty() && Fold(std::string(form->GetName()) + " " + std::string(file->GetFilename())).find(query) == std::wstring::npos) continue;
+            if (!category.empty() && Category(form) != category) continue;
+            ++matches;
+            if (catalog.size() < 100) catalog.push_back(ItemInfo(form->As<RE::TESBoundObject>(), 1, false));
+        }
     }
     return {{"inventory", inventory}, {"presets", presets}, {"catalog", catalog}, {"matches", matches}};
 }
