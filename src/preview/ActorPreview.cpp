@@ -115,6 +115,7 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
             std::lock_guard lock(Guard);
             auto it = Portraits.find(reinterpret_cast<std::uintptr_t>(cookie));
             if (it == Portraits.end()) return;
+            logger::info("Портрет: callback ticket={}, ok={}", reinterpret_cast<std::uintptr_t>(cookie), still ? still->ok : false);
             request = std::move(it->second);
             Portraits.erase(it);
             if (request.generation != Generation) return;
@@ -145,6 +146,7 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
         SavePortrait(request.identity, image);
+        logger::info("Портрет сохранён: {}, {} bytes", request.identity, image.size());
         UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"portrait", image}, {"generation", request.generation}});
     } catch (const std::exception& failure) {
         logger::warn("Сохранение портрета: {}", failure.what());
@@ -291,11 +293,13 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     }
     // Framing 0 читает текущий live-кадр; framing 1/2 создаёт отдельный снимок и требует закрытия вида.
     if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
+    logger::info("Портрет: запрос ticket={}, actor={:08X}, editor={}, live={}", ticket, actor->GetFormID(), editorCapture, Live.view);
     P::Id request = 0;
     const auto hints = fmt::format("turn={};pitch={};lighting={}", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
     const auto result = editorCapture ?
         Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 0, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
         Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
+    logger::info("Портрет: provider result={}, request={}", result, request);
     if (result != 0) {
         std::lock_guard lock(Guard);
         Portraits.erase(ticket);
