@@ -109,8 +109,8 @@ static std::string Base64(const unsigned char *bytes, std::size_t count) {
 }
 
 static void OnStill(const P::Still* still, void* cookie) noexcept {
+    PortraitRequest request;
     try {
-        PortraitRequest request;
         {
             std::lock_guard lock(Guard);
             auto it = Portraits.find(reinterpret_cast<std::uintptr_t>(cookie));
@@ -141,11 +141,15 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
             pixels = cropped.data(); width = height = 256;
         }
         auto* png = stbi_write_png_to_mem(pixels, width * 4, width, height, 4, &size);
-        if (!png) return;
+        if (!png) throw std::runtime_error("Cannot encode portrait PNG");
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
         SavePortrait(request.identity, image);
         UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"portrait", image}, {"generation", request.generation}});
+    } catch (const std::exception& failure) {
+        logger::warn("Сохранение портрета: {}", failure.what());
+        if (!request.identity.empty() && IsCurrent(request.generation))
+            UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"error", failure.what()}, {"generation", request.generation}});
     } catch (...) { logger::warn("Phantasm: callback портрета отклонён"); }
 }
 static void Initialize() {
@@ -188,6 +192,11 @@ void Clear() {
 }
 static json LiveFrame(P::Id form, const std::string& identity, const json& options, bool item) {
     Initialize();
+    {
+        std::lock_guard lock(Guard);
+        // Запоздавшая команда камеры не должна менять кадр во время readback.
+        if (!Portraits.empty()) return Describe(Live);
+    }
     const auto yaw = options.value("yaw", 0.f), zoom = options.value("zoom", 1.f);
     const auto pitch = std::clamp(options.value("pitch", 0.f), -75.f, 75.f);
     const auto light = options.value("light", std::string("studio"));
@@ -218,7 +227,8 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
         else Check(Api->OpenActor(Client, "actor", form, 480, 640, 0, &view), "OpenActor");
         if (!item) {
             Check(Api->SetHint(view, "pose", "captured"), "SetHint pose");
-            Check(Api->SetHint(view, "motion", "true"), "SetHint motion");
+            // Замораживаем скопированную позу: граф может содержать боевой цикл под обычным idle.
+            Check(Api->SetHint(view, "motion", "false"), "SetHint motion");
         }
         std::lock_guard lock(Guard);
         Live.view = view;
@@ -256,34 +266,34 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
         if (image.starts_with("data:image/png;base64,")) return {{"identity", identity}, {"kind", "portrait"}, {"portrait", image}};
     }
     Initialize();
+    const bool editorCapture = options.value("editorCapture", false);
     std::uintptr_t ticket;
     P::Id closeView = 0;
     {
         std::lock_guard lock(Guard);
         if (!Portraits.empty()) throw std::runtime_error("Portrait queue is full");
-        closeView = Live.view;
-        Live = {};
+        if (editorCapture) {
+            if (!Live.view || Live.identity != identity || Live.kind != "actor" || Live.image.empty())
+                throw std::runtime_error("Wait for the live preview before saving the portrait");
+        } else {
+            closeView = Live.view;
+            Live = {};
+        }
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation});
-        if (options.value("editorCapture", false)) {
+        if (editorCapture) {
             auto& shot = Portraits.at(ticket);
             shot.crop = true;
             shot.x = std::clamp(options.value("cropX", 0.f), 0.f, 1.f);
             shot.y = std::clamp(options.value("cropY", 0.f), 0.f, 1.f);
             shot.size = std::clamp(options.value("cropSize", .5f), .05f, 1.f);
-            const auto scale = .95f - (std::clamp(options.value("zoom", 1.f), .5f, 2.5f) - .5f) * .225f;
-            const auto px = std::clamp(options.value("panX", 0.f), -.4f, .4f);
-            const auto py = std::clamp(options.value("panY", 0.f), -.4f, .4f);
-            shot.x = .5f + (shot.x - .5f - px) * scale;
-            shot.y = .5f + (shot.y - .5f - py) * scale;
-            shot.size *= scale;
         }
     }
-    // Still и живой вид делят renderer: очередь закрытия должна идти первой.
+    // Framing 0 читает текущий live-кадр; framing 1/2 создаёт отдельный снимок и требует закрытия вида.
     if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
     P::Id request = 0;
     const auto hints = fmt::format("turn={};pitch={};lighting={}", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
-    const auto result = options.value("editorCapture", false) ?
+    const auto result = editorCapture ?
         Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 0, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
         Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
     if (result != 0) {
