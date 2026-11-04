@@ -277,10 +277,9 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
         if (editorCapture) {
             if (!Live.view || Live.identity != identity || Live.kind != "actor" || Live.image.empty())
                 throw std::runtime_error("Wait for the live preview before saving the portrait");
-        } else {
-            closeView = Live.view;
-            Live = {};
         }
+        closeView = Live.view;
+        Live = {};
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation});
         if (editorCapture) {
@@ -289,6 +288,14 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
             shot.x = std::clamp(options.value("cropX", 0.f), 0.f, 1.f);
             shot.y = std::clamp(options.value("cropY", 0.f), 0.f, 1.f);
             shot.size = std::clamp(options.value("cropSize", .5f), .05f, 1.f);
+            // Отдельный полнофигурный снимок имеет базовый масштаб камеры.
+            const auto scale = .95f - (std::clamp(options.value("zoom", 1.f), .5f, 2.5f) - .5f) * .225f;
+            const auto limit = (1.f - scale) / (2.f * scale);
+            const auto px = std::clamp(options.value("panX", 0.f), -limit, limit);
+            const auto py = std::clamp(options.value("panY", 0.f), -limit, limit);
+            shot.x = .5f + (shot.x - .5f - px) * scale;
+            shot.y = .5f + (shot.y - .5f - py) * scale;
+            shot.size *= scale;
         }
     }
     // Framing 0 читает текущий live-кадр; framing 1/2 создаёт отдельный снимок и требует закрытия вида.
@@ -297,7 +304,7 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     P::Id request = 0;
     const auto hints = fmt::format("turn={};pitch={};lighting={}", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
     const auto result = editorCapture ?
-        Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 0, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
+        Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 2, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
         Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
     logger::info("Портрет: provider result={}, request={}", result, request);
     if (result != 0) {
