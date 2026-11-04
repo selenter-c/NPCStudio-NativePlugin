@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.7.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.7.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -94,6 +94,7 @@ json StudioService::Snapshot() const {
 json StudioService::Execute(const json& command) {
     const auto action = command.at("action").get<std::string>();
     if (action == "state") return Snapshot();
+    if (action == "deletePreset" || action == "deleteCategory") { Equipment::DeleteCustom(action, command.at("key").get<std::string>()); return Snapshot(); }
     if (action == "portraitCache") {
         const auto& identities = command.at("identities");
         if (!identities.is_array() || identities.size() > 24) throw std::runtime_error("Invalid portrait batch");

@@ -72,6 +72,12 @@ static json ItemInfo(RE::TESBoundObject* form, int count, bool worn) {
     auto item = Address(form);
     item["name"] = form->GetName();
     item["category"] = Category(form);
+    item["weight"] = form->GetWeight();
+    item["value"] = form->GetGoldValue();
+    item["editorId"] = form->GetFormEditorID();
+    if (auto* armor = form->As<RE::TESObjectARMO>()) item["armorRating"] = armor->armorRating / 100.f;
+    if (auto* weapon = form->As<RE::TESObjectWEAP>()) item["damage"] = weapon->GetAttackDamage();
+    if (auto* ammo = form->As<RE::TESAmmo>()) item["damage"] = ammo->data.damage;
     item["count"] = count;
     item["worn"] = worn;
     item["kind"] = form->Is(RE::FormType::Armor) ? "armor" : form->Is(RE::FormType::Weapon) ? "weapon" : "ammo";
@@ -112,6 +118,27 @@ void AddCategory(const std::string& name) {
     { std::ofstream file(temp, std::ios::binary | std::ios::trunc); file << json(categories).dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать категории"); }
     if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить категории");
 }
+void DeleteCustom(const std::string& action, const std::string& key) {
+    const auto presets = ReadPresets();
+    if (action == "deletePreset") {
+        if (!key.starts_with("user-") || key.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos || !presets.contains(key))
+            throw std::runtime_error("Можно удалить только пользовательский набор");
+        if (!std::filesystem::remove(PresetDirectory / (key + ".json"))) throw std::runtime_error("Не удалось удалить набор");
+        return;
+    }
+    if (key == "Мои наборы") throw std::runtime_error("Основную категорию удалить нельзя");
+    for (const auto& [id, preset] : presets) if (preset.value("category", std::string("Мои наборы")) == key)
+        throw std::runtime_error("Сначала удалите наборы из этой категории");
+    const auto path = PresetDirectory.parent_path() / "categories.json";
+    std::ifstream input(path);
+    auto categories = json::parse(input).get<std::set<std::string>>();
+    input.close();
+    if (!categories.erase(key)) throw std::runtime_error("Пользовательская категория не найдена");
+    auto temp = path; temp += ".tmp";
+    { std::ofstream output(temp); output << json(categories).dump(2); output.flush(); if (!output) throw std::runtime_error("Не удалось записать категории"); }
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить категории");
+}
+
 void ValidatePreset(const std::string& id) {
     const auto presets = ReadPresets();
     const auto found = presets.find(id);
