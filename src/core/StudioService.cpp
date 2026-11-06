@@ -91,7 +91,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.6"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.7"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -247,11 +247,21 @@ json StudioService::Execute(const json& command) {
                 return {{"partial", true}, {"preview", RenderLookFrame(actor, previewIdentity, command)}};
             }
             saved = Appearance::Commit(actor, managed, saved, hairDraft);
-            if (managed) (*assignment)["appearance"] = saved;
+            if (managed) {
+                (*assignment)["appearance"] = saved;
+                const auto id = command.at("id").get<unsigned>();
+                if (saved.contains("skin")) {
+                    managedSkinNodes.insert_or_assign(id, actor->GetFaceNode());
+                    externalWork = true;
+                } else managedSkinNodes.erase(id);
+            }
             else if (!saved.empty()) {
                 externalLooks.insert_or_assign(actor->GetFormID(), ExternalLook{
                     actor->GetActorBase()->GetFormID(), saved, actor->GetFaceNode()});
                 externalWork = true;
+            } else {
+                externalLooks.erase(actor->GetFormID());
+                externalWork = !externalLooks.empty() || !managedSkinNodes.empty();
             }
         } else if (hairDraft.target) {
             Preview::Clear();
@@ -361,6 +371,7 @@ json StudioService::Execute(const json& command) {
             assignments[key].erase("faceMorphs");
             assignments[key].erase("facePresets");
             assignments[key].erase("appearance");
+            managedSkinNodes.erase(slot.id);
             QueueRestore(slot);
         } else if (action == "rename") {
             auto name = command.at("name").get<std::string>();
@@ -376,6 +387,7 @@ json StudioService::Execute(const json& command) {
                 workPending = true;
                 UI::SetWorldWork(true);
                 Equipment::Execute(slot.actor, command);
+                if (auto it = managedSkinNodes.find(slot.id); it != managedSkinNodes.end()) it->second = nullptr;
                 assignments[key]["loadout"] = Equipment::Capture(slot.actor);
                 assignments[key].erase("audit");
                 assignments[key].erase("warning");
@@ -417,6 +429,7 @@ void StudioService::Delete(Slot& slot) {
     Names::Apply(slot.base, slot.actor, slot.defaultName);
     const auto oldName = assignments.at(std::to_string(slot.id)).at("name").get<std::string>();
     assignments.erase(std::to_string(slot.id));
+    managedSkinNodes.erase(slot.id);
     logger::info("Удалён NPC '{}' из слота {}; reference {:08X} возвращена в резерв", oldName, slot.id, slot.actor->GetFormID());
 }
 
@@ -451,6 +464,14 @@ void StudioService::Pump() {
         auto* node = base && base->GetFormID() == edit.base && actor->Is3DLoaded() ? actor->GetFaceNode() : nullptr;
         if (!node) edit.appliedNode = nullptr;
         else if (node != edit.appliedNode && Appearance::RestoreExternal(actor, edit.look)) edit.appliedNode = node;
+    }
+    for (auto& [id, appliedNode] : managedSkinNodes) {
+        auto* actor = slots[id].actor;
+        if (restoring.contains(id) || (draftTarget && draftTarget.get() == actor)) continue;
+        auto* node = !actor->IsDisabled() && actor->Is3DLoaded() ? actor->GetFaceNode() : nullptr;
+        if (!node) appliedNode = nullptr;
+        else if (node != appliedNode && Appearance::RestoreSkin(actor, assignments.at(std::to_string(id)).at("appearance")))
+            appliedNode = node;
     }
     if (settlingTicks) --settlingTicks;
     for (auto it = restoring.begin(); it != restoring.end();) {
@@ -539,10 +560,13 @@ void StudioService::Pump() {
                     fmt::format("Недостача: {}; не надето: {}. Проверьте снаряжение", audit.at("missing").size(), audit.at("notEquipped").size());
                 logger::info("Проверка снаряжения слот {}: {}", slot.id, audit.dump());
             } else assignments[key]["warning"] = "";
+            if (auto skin = managedSkinNodes.find(slot.id); skin != managedSkinNodes.end())
+                skin->second = Appearance::RestoreSkin(slot.actor, assignments[key].at("appearance")) ? slot.actor->GetFaceNode() : nullptr;
             it = restoring.erase(it);
         } catch (const std::exception& e) { assignments[key]["warning"] = e.what(); logger::warn("Восстановление слот {}: {}", slot.id, e.what()); it = restoring.erase(it); }
     }
     workPending = !restoring.empty() || settlingTicks > 0 || lookFrame.has_value();
+    externalWork = !externalLooks.empty() || !managedSkinNodes.empty();
     UI::SetWorldWork(workPending.load());
 }
 void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; lookFrame.reset(); restoring.clear(); settlingTicks = 0; workPending = false; externalWork = false; appearanceTarget.reset(); loaded = false; UI::SetWorldWork(false); }
@@ -572,9 +596,14 @@ void StudioService::AfterLoad(bool success) {
     }
     if (success) {
         RestoreNames();
-        externalWork = stateValid && !externalLooks.empty();
-        if (stateValid) for (auto& slot : slots)
-            if (assignments.contains(std::to_string(slot.id)) && !slot.actor->IsDisabled()) QueueRestore(slot);
+        if (stateValid) for (auto& slot : slots) {
+            const auto it = assignments.find(std::to_string(slot.id));
+            if (it == assignments.end()) continue;
+            if (const auto look = it->find("appearance"); look != it->end() && look->contains("skin"))
+                managedSkinNodes.emplace(slot.id, nullptr);
+            if (!slot.actor->IsDisabled()) QueueRestore(slot);
+        }
+        externalWork = stateValid && (!externalLooks.empty() || !managedSkinNodes.empty());
     }
 }
 
@@ -584,7 +613,7 @@ void StudioService::NewGame() {
     UI::SetWorldWork(false);
     Preview::Clear();
     assignments = json::object();
-    externalLooks.clear(); externalWork = false; appearanceTarget.reset();
+    externalLooks.clear(); managedSkinNodes.clear(); externalWork = false; appearanceTarget.reset();
     usedSlots.clear(); restoring.clear(); workPending = false;
     stateValid = true;
     if (ready) error.clear();
@@ -600,7 +629,7 @@ void StudioService::Revert() {
     stateValid = true;
     if (ready) error.clear();
     assignments = json::object();
-    externalLooks.clear(); externalWork = false; appearanceTarget.reset();
+    externalLooks.clear(); managedSkinNodes.clear(); externalWork = false; appearanceTarget.reset();
     hairDraft = {};
     lookFrame.reset();
 }

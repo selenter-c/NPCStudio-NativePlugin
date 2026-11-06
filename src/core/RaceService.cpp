@@ -33,7 +33,7 @@ void SynchronizeSkin(RE::Actor *actor) {
     if (!face || !face->tintMasks) return;
     using Tone = RE::TESRace::FaceRelatedData::TintAsset::TintLayer::SkinTone;
     for (auto* asset : *face->tintMasks) {
-        if (!asset || !asset->texture.skinTone.any(Tone::kSkinTone)) continue;
+        if (!asset || asset->texture.skinTone != Tone::kSkinTone) continue;
         // Голова уже пересобрана SwitchRace; переносим её слой кожи в QNAM тела.
         if (base->tintLayers) {
             for (auto* layer : *base->tintLayers) {

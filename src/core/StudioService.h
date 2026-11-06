@@ -42,6 +42,7 @@ private:
         const RE::BSFaceGenNiNode* appliedNode = nullptr;
     };
     std::map<RE::FormID, ExternalLook> externalLooks;
+    std::map<unsigned, const RE::BSFaceGenNiNode*> managedSkinNodes;
     RE::ObjectRefHandle appearanceTarget;
     Appearance::Draft hairDraft;
     struct LookFrame {

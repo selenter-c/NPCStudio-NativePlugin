@@ -13,6 +13,8 @@ struct Draft {
     RE::BGSColorForm* originalColor = nullptr;
     RE::BGSColorForm* color = nullptr;
     std::array<Part, 3> faceParts{};
+    int originalSkin = -1;
+    int skin = -1;
 };
 nlohmann::json Describe(RE::Actor* actor, bool managed, const nlohmann::json& saved);
 nlohmann::json Height(RE::Actor* actor);
@@ -22,6 +24,7 @@ nlohmann::json Commit(RE::Actor* actor, bool managed, const nlohmann::json& save
 void Cancel(Draft& draft);
 std::pair<RE::BGSHeadPart*, std::uint64_t> ThumbnailPart(RE::Actor* actor, RE::FormID id);
 bool RestoreExternal(RE::Actor* actor, const nlohmann::json& saved);
+bool RestoreSkin(RE::Actor* actor, const nlohmann::json& saved);
 RE::BGSColorForm* SavedColor(const nlohmann::json& saved);
 RE::BGSHeadPart* SavedHair(const nlohmann::json& saved);
 bool CanRestoreHair(RE::Actor* actor, RE::BGSHeadPart* part);

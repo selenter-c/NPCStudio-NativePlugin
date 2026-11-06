@@ -176,6 +176,88 @@ static Color* BaseColor(RE::Actor* actor) {
     return data && data->hairColor ? data->hairColor : Face(actor)->defaultHairColor;
 }
 
+static int SkinValue(const RE::Color& color) {
+    return (color.red << 16) | (color.green << 8) | color.blue;
+}
+
+static int SavedSkin(const json& saved) {
+    const auto it = saved.find("skin");
+    return it != saved.end() && it->is_number_integer() && *it >= 0 && *it <= 0xFFFFFF ? it->get<int>() : -1;
+}
+
+static RE::BSLightingShaderProperty* SkinShader(RE::BSGeometry* geometry) {
+    return geometry ? netimmerse_cast<RE::BSLightingShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get()) : nullptr;
+}
+
+static bool ApplySkin(RE::Actor* actor, int value) {
+    using Feature = RE::BSShaderMaterial::Feature;
+    using Flag = RE::BSShaderProperty::EShaderPropertyFlag8;
+    auto* root = actor->Get3D(false);
+    auto* face = actor->GetFaceNode();
+    auto* base = actor->GetActorBase();
+    auto* part = base ? base->GetHeadPartByType(PartType::kFace) : nullptr;
+    auto* object = part && face ? face->GetObjectByName(part->formEditorID) : nullptr;
+    auto* geometry = object ? object->AsGeometry() : nullptr;
+    auto* shader = SkinShader(geometry);
+    auto* manager = RE::BSFaceGenManager::GetSingleton();
+    if (!root || !shader || !shader->material || !manager) return false;
+    const auto feature = shader->material->GetFeature();
+    if (feature != Feature::kFaceGen && feature != Feature::kFaceGenRGBTint) return false;
+    if (value < 0) {
+        manager->PrepareHeadPartForShaders(face, part, base);
+        actor->UpdateSkinColor();
+        return true;
+    }
+    const RE::NiColor rgb(((value >> 16) & 255) / 255.f, ((value >> 8) & 255) / 255.f, (value & 255) / 255.f);
+    if (feature == Feature::kFaceGen) {
+        // Печёный FaceGen не принимает RGB. Движок копирует временный материал в свой шейдер.
+        using Material = RE::BSLightingShaderMaterialFacegenTint;
+        auto* tint = RE::BSLightingShaderMaterialBase::CreateMaterial<Material>();
+        if (!tint) return false;
+        tint->CopyBaseMembers(static_cast<RE::BSLightingShaderMaterialBase*>(shader->material));
+        tint->tintColor = rgb;
+        shader->SetFlags(Flag::kFace, false);
+        shader->SetFlags(Flag::kFaceGenRGBTint, true);
+        shader->SetMaterial(tint, true);
+        shader->SetupGeometry(geometry);
+        shader->FinishSetupGeometry(geometry);
+        tint->~Material();
+        RE::MemoryManager::GetSingleton()->GetThreadScrapHeap()->Deallocate(tint);
+    }
+    if (!shader->material || shader->material->GetFeature() != Feature::kFaceGenRGBTint) return false;
+    geometry->UpdateBodyTint(rgb);
+    root->UpdateBodyTint(rgb);
+    return true;
+}
+
+static json SkinPalette(RE::Actor* actor, int current) {
+    auto options = json::array();
+    const auto add = [&](int id, int rgb, const std::string& name) {
+        if (std::ranges::any_of(options, [id](const json& option) { return option.at("id") == id; })) return;
+        options.push_back({{"id", id}, {"name", name}, {"rgb", fmt::format("#{:06X}", rgb)}});
+    };
+    add(-1, SkinValue(actor->GetActorBase()->bodyTintColor), "Исходный тон");
+    const auto append = [&](const Color* form) {
+        if (!form) return;
+        const auto rgb = SkinValue(form->color);
+        const auto* name = form->GetFullName();
+        add(rgb, rgb, name && *name ? name : fmt::format("#{:06X}", rgb));
+    };
+    using Tone = RE::TESRace::FaceRelatedData::TintAsset::TintLayer::SkinTone;
+    if (auto* masks = Face(actor)->tintMasks) for (auto* asset : *masks) {
+        if (!asset || asset->texture.skinTone != Tone::kSkinTone) continue;
+        append(asset->texture.presetDefault);
+        for (auto* form : asset->presets.colors) append(form);
+    }
+    if (current >= 0) add(current, current, fmt::format("#{:06X}", current));
+    return options;
+}
+
+bool RestoreSkin(RE::Actor* actor, const json& saved) {
+    const auto skin = SavedSkin(saved);
+    return skin < 0 || ApplySkin(actor, skin);
+}
+
 static bool CompatibleColor(RE::Actor* actor, const Color* color) {
     const auto* face = Face(actor);
     if (!color || Address(color).is_null()) return false;
@@ -258,6 +340,7 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     json result = {{"name", name ? name : ""}, {"managed", managed}, {"available", Ready(actor, managed)}};
     if (!result["available"].get<bool>()) return result;
     result["height"] = Height(actor);
+    result["skin"] = {{"value", SavedSkin(saved)}, {"options", SkinPalette(actor, SavedSkin(saved))}};
     auto* hair = BaseHair(actor);
     if (!managed) {
         auto* current = Resolve<Head>(saved.value("hair", json(nullptr)));
@@ -321,6 +404,7 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
         auto* color = SavedColor(saved);
         if (!color) color = BaseColor(actor);
         draft = {actor->GetHandle(), current, current, color, color};
+        draft.skin = draft.originalSkin = SavedSkin(saved);
         for (std::size_t i = 0; i < FaceParts.size(); ++i) {
             auto* part = CurrentFacePart(actor, saved, FaceParts[i]);
             draft.faceParts[i] = {part, part};
@@ -328,6 +412,12 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
     }
     auto* hair = RE::TESForm::LookupByID<Head>(command.at("hair").get<RE::FormID>());
     const auto colorId = command.at("color").get<RE::FormID>();
+    const auto skin = command.value("skin", draft.skin);
+    if (skin != draft.skin && skin != draft.originalSkin) {
+        const auto palette = SkinPalette(actor, draft.originalSkin);
+        if (std::ranges::none_of(palette, [skin](const json& option) { return option.at("id") == skin; }))
+            throw std::runtime_error("Оттенок кожи недоступен для этого NPC");
+    }
     auto* color = colorId ? RE::TESForm::LookupByID<Color>(colorId) : nullptr;
     if (hair != draft.originalHair && (!Compatible(actor, hair) || !SafeMeshes(hair)))
         throw std::runtime_error("Причёска несовместима, отсутствует модель или требуется Faster HDT-SMP");
@@ -382,11 +472,22 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
     }
     draft.color = color;
     Tint(actor, color);
+    if (skin != draft.skin) {
+        if (!ApplySkin(actor, skin)) {
+            Cancel(draft);
+            throw std::runtime_error("Материал кожи этого NPC не поддерживается");
+        }
+        draft.skin = skin;
+    }
     return changedHair || changedFace;
 }
 
 json Commit(RE::Actor* actor, bool managed, const json& saved, Draft& draft) {
     auto result = saved;
+    if (draft.skin != draft.originalSkin) {
+        if (draft.skin < 0) result.erase("skin");
+        else result["skin"] = draft.skin;
+    }
     if (draft.hair != draft.originalHair) {
         if (managed) actor->GetActorBase()->ChangeHeadPart(draft.hair);
         result["hair"] = !managed && draft.hair == BaseHair(actor) ? json(nullptr) : Address(draft.hair);
@@ -419,6 +520,7 @@ void Cancel(Draft& draft) {
             if (part.current == part.original || HasMesh(actor, part.original)) continue;
             SwapFacePart(actor, part.current, part.original);
         }
+        if (draft.skin != draft.originalSkin) ApplySkin(actor, draft.originalSkin);
         Tint(actor, draft.originalColor);
     }
     draft = {};
@@ -445,6 +547,7 @@ bool RestoreExternal(RE::Actor* actor, const json& saved) {
             logger::warn("После загрузки NPC {:08X} движок не подтвердил замену {}", actor->GetFormID(), field.key);
     }
     if (auto* color = SavedColor(saved); CompatibleColor(actor, color)) Tint(actor, color);
+    RestoreSkin(actor, saved);
     return complete;
 }
 }
