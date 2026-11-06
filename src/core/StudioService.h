@@ -1,6 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
 #include "core/StateCodec.h"
+#include "core/AppearanceService.h"
 #include <atomic>
 #include <thread>
 #include <map>
@@ -19,6 +20,7 @@ public:
     void Revert();
     void Pump();
     void PickAppearanceTarget();
+    void CancelAppearance();
 private:
     struct Slot {
         unsigned id = 0;
@@ -40,6 +42,7 @@ private:
     };
     std::map<RE::FormID, ExternalLook> externalLooks;
     RE::ObjectRefHandle appearanceTarget;
+    Appearance::Draft hairDraft;
     std::atomic<bool> externalWork = false;
     struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; bool raceRequested = false; bool appearanceRestored = false; };
     std::map<unsigned, RestoreJob> restoring;

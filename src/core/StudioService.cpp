@@ -91,7 +91,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -99,6 +99,12 @@ json StudioService::Snapshot() const {
 void StudioService::PickAppearanceTarget() {
     appearanceTarget.reset();
     if (auto* crosshair = RE::CrosshairPickData::GetSingleton()) appearanceTarget = crosshair->GetActiveTarget();
+}
+void StudioService::CancelAppearance() {
+    if (auto target = hairDraft.target.get()) {
+        if (auto it = externalLooks.find(target->GetFormID()); it != externalLooks.end()) it->second.appliedNode = nullptr;
+    }
+    Appearance::Cancel(hairDraft);
 }
 
 json StudioService::Execute(const json& command) {
@@ -133,7 +139,7 @@ json StudioService::Execute(const json& command) {
         }
         return {{"partial", true}, {"portraits", images}};
     }
-    if (action == "previewStop") { Preview::Clear(); return {{"partial", true}}; }
+    if (action == "previewStop") { Preview::Clear(); CancelAppearance(); return {{"partial", true}}; }
     if (action == "saveSettings") { UI::SaveSettings(command.at("settings")); return Snapshot(); }
     if (action == "addCategory") { Equipment::AddCategory(command.at("name").get<std::string>()); return Snapshot(); }
     if (!ready || !stateValid) throw std::runtime_error(error.empty() ? "Пул недоступен" : error);
@@ -142,7 +148,8 @@ json StudioService::Execute(const json& command) {
     if (action == "editPreset") { Equipment::SaveEditedPreset(command); return Snapshot(); }
     if (action == "presetCatalog") return {{"partial",true},{"catalog",Equipment::Describe(nullptr, command).at("catalog")}};
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (action == "appearance" || action == "applyAppearance") {
+    if (action == "appearance" || action == "applyAppearance" || action == "tryAppearance" ||
+        action == "appearanceFrame" || action == "hairThumbnail") {
         const bool managed = command.contains("id");
         RE::Actor* actor = nullptr;
         json* assignment = nullptr;
@@ -165,19 +172,36 @@ json StudioService::Execute(const json& command) {
             if (auto it = externalLooks.find(actor->GetFormID()); it != externalLooks.end() &&
                 it->second.base == actor->GetActorBase()->GetFormID()) saved = it->second.look;
         }
-        if (action == "applyAppearance") {
-            if (!managed && externalLooks.size() >= 128 && !externalLooks.contains(actor->GetFormID()))
+        if (action == "hairThumbnail") {
+            auto* part = Appearance::ThumbnailPart(actor, command.at("hair").get<RE::FormID>());
+            return {{"partial", true}, {"hairThumbnail", Preview::HairThumbnail(part, command.at("token").get<unsigned>())}};
+        }
+        const auto previewIdentity = fmt::format("look-{:08X}", actor->GetFormID());
+        if (action == "appearanceFrame") {
+            if (command.value("resume", false)) Preview::Clear();
+            return {{"partial", true}, {"preview", Preview::Frame(actor, previewIdentity, command)}};
+        }
+        if (action == "applyAppearance" || action == "tryAppearance") {
+            if (action == "applyAppearance" && !managed && externalLooks.size() >= 128 && !externalLooks.contains(actor->GetFormID()))
                 throw std::runtime_error("Достигнут лимит внешних NPC");
             Preview::Clear();
-            saved = Appearance::Apply(actor, managed, saved, command);
+            if (hairDraft.target && hairDraft.target.get().get() != actor) CancelAppearance();
+            Appearance::TryOn(actor, managed, saved, command, hairDraft);
+            if (action == "tryAppearance") return {{"partial", true}, {"preview", Preview::Frame(actor, previewIdentity, command)}};
+            saved = Appearance::Commit(actor, managed, saved, hairDraft);
             if (managed) (*assignment)["appearance"] = saved;
             else if (!saved.empty()) {
                 externalLooks.insert_or_assign(actor->GetFormID(), ExternalLook{
                     actor->GetActorBase()->GetFormID(), saved, actor->GetFaceNode()});
                 externalWork = true;
             }
+        } else if (hairDraft.target) {
+            Preview::Clear();
+            CancelAppearance();
         }
-        return {{"partial", true}, {"appearance", Appearance::Describe(actor, managed, saved)}};
+        auto description = Appearance::Describe(actor, managed, saved);
+        description["previewIdentity"] = previewIdentity;
+        return {{"partial", true}, {"appearance", std::move(description)}};
     }
     if (action == "itemPreview") {
         const auto& item = command.at("item");
@@ -344,7 +368,9 @@ void StudioService::QueueRestore(Slot& slot, const std::string& preset) {
 }
 void StudioService::Pump() {
     if (!loaded || !stateValid) { restoring.clear(); workPending = false; externalWork = false; UI::SetWorldWork(false); return; }
+    const auto draftTarget = hairDraft.target.get();
     for (auto& [id, edit] : externalLooks) {
+        if (draftTarget && draftTarget->GetFormID() == id) continue;
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
         auto* base = actor ? actor->GetActorBase() : nullptr;
         auto* node = base && base->GetFormID() == edit.base && actor->Is3DLoaded() ? actor->GetFaceNode() : nullptr;
@@ -387,16 +413,22 @@ void StudioService::Pump() {
                 slot.base->originalRace = nullptr;
                 slot.base->faceNPC = nullptr;
                 logger::info("Восстановление внешности слота {}: actor={}, base={}, headParts={}", slot.id, targetRace->GetFormEditorID(), slot.base->race->GetFormEditorID(), slot.base->numHeadParts);
+                const auto look = assignments[key].value("appearance", json::object());
+                auto* savedHair = Appearance::SavedHair(look);
                 if (assignments[key].contains("headParts")) {
                     for (const auto& part : assignments[key]["headParts"]) {
                         auto* head = RE::TESDataHandler::GetSingleton()->LookupForm<RE::BGSHeadPart>(part.at("form").get<unsigned>(), part.at("plugin").get<std::string>());
-                        if (head) slot.base->ChangeHeadPart(head);
-                        else logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
+                        if (!head) {
+                            logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
+                            continue;
+                        }
+                        if (look.contains("hair") && (head->type == RE::BGSHeadPart::HeadPartType::kHair ||
+                            (savedHair && std::ranges::find(savedHair->extraParts, head) != savedHair->extraParts.end()))) continue;
+                        slot.base->ChangeHeadPart(head);
                     }
                 }
-                const auto look = assignments[key].value("appearance", json::object());
-                if (auto* hair = Appearance::SavedHair(look); hair && hair != slot.base->GetHeadPartByType(RE::BGSHeadPart::HeadPartType::kHair))
-                    slot.base->ChangeHeadPart(hair);
+                if (savedHair && savedHair != slot.base->GetHeadPartByType(RE::BGSHeadPart::HeadPartType::kHair) &&
+                    Appearance::CanRestoreHair(slot.actor, savedHair)) slot.base->ChangeHeadPart(savedHair);
                 auto* color = Appearance::SavedColor(look);
                 if (!color) color = targetRace == slot.defaultRace && slot.defaultHairColor ? slot.defaultHairColor : face->defaultHairColor;
                 slot.base->SetHairColor(color);
@@ -493,6 +525,7 @@ void StudioService::Revert() {
     if (ready) error.clear();
     assignments = json::object();
     externalLooks.clear(); externalWork = false; appearanceTarget.reset();
+    hairDraft = {};
 }
 
 void StudioService::Save(SKSE::SerializationInterface* stream) {

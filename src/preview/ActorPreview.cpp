@@ -31,7 +31,14 @@ struct LiveState {
     std::string lighting;
 };
 static LiveState Live;
-struct PortraitRequest { std::string identity; std::uint64_t generation; float x = 0, y = 0, size = 1; bool crop = false; };
+struct PortraitRequest {
+    std::string identity;
+    std::uint64_t generation;
+    float x = 0, y = 0, size = 1;
+    bool crop = false;
+    unsigned thumbnailToken = 0;
+    P::Id thumbnailRequest = 0;
+};
 static std::unordered_map<std::uintptr_t, PortraitRequest> Portraits;
 static std::uintptr_t NextPortrait = 0;
 static std::filesystem::path PortraitPath(const std::string& identity) {
@@ -115,15 +122,20 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
             std::lock_guard lock(Guard);
             auto it = Portraits.find(reinterpret_cast<std::uintptr_t>(cookie));
             if (it == Portraits.end()) return;
-            logger::info("Портрет: callback ticket={}, ok={}", reinterpret_cast<std::uintptr_t>(cookie), still ? still->ok : false);
             request = std::move(it->second);
             Portraits.erase(it);
             if (request.generation != Generation) return;
         }
+        const auto publish = [&](json result) {
+            result["identity"] = request.identity;
+            result["kind"] = request.thumbnailToken ? "hairThumbnail" : "portrait";
+            result["generation"] = request.generation;
+            if (request.thumbnailToken) result["token"] = request.thumbnailToken;
+            UI::PublishPreview(std::move(result));
+        };
         if (!still || still->size < sizeof(P::Still) || !still->ok || !still->pixels ||
             still->width == 0 || still->height == 0 || still->width > 1024 || still->height > 1024) {
-            logger::warn("Портрет отклонён: ok={}, size={}x{}, reason={}", still ? still->ok : false, still ? still->width : 0, still ? still->height : 0, still && still->reason ? still->reason : "no callback");
-            UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"error", still && still->reason ? still->reason : "Portrait failed"}, {"generation", request.generation}});
+            publish({{"error", still && still->reason ? still->reason : "Still failed"}});
             return;
         }
         // Readback провайдера упаковывает строки в width*4. Поле metadata не является RowPitch.
@@ -145,13 +157,17 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         if (!png) throw std::runtime_error("Cannot encode portrait PNG");
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
-        SavePortrait(request.identity, image);
-        logger::info("Портрет сохранён: {}, {} bytes", request.identity, image.size());
-        UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"portrait", image}, {"generation", request.generation}});
+        if (request.thumbnailToken) publish({{"image", std::move(image)}});
+        else {
+            SavePortrait(request.identity, image);
+            logger::info("Портрет сохранён: {}, {} bytes", request.identity, image.size());
+            publish({{"portrait", std::move(image)}});
+        }
     } catch (const std::exception& failure) {
         logger::warn("Сохранение портрета: {}", failure.what());
         if (!request.identity.empty() && IsCurrent(request.generation))
-            UI::PublishPreview({{"identity", request.identity}, {"kind", "portrait"}, {"error", failure.what()}, {"generation", request.generation}});
+            UI::PublishPreview({{"identity", request.identity}, {"kind", request.thumbnailToken ? "hairThumbnail" : "portrait"},
+                {"token", request.thumbnailToken}, {"error", failure.what()}, {"generation", request.generation}});
     } catch (...) { logger::warn("Phantasm: callback портрета отклонён"); }
 }
 static void Initialize() {
@@ -183,14 +199,19 @@ bool IsCurrent(std::uint64_t generation) {
     return generation == Generation;
 }
 void Clear() {
+    P::Id thumbnail = 0;
     {
         std::lock_guard lock(Guard);
         ++Generation;
         Live = {};
+        if (!Portraits.empty()) thumbnail = Portraits.begin()->second.thumbnailRequest;
         Portraits.clear();
     }
     const auto client = std::exchange(Client, 0);
-    if (Api && client) Api->ReleaseClient(client);
+    if (Api && client) {
+        if (thumbnail) Api->CancelStill(client, thumbnail);
+        Api->ReleaseClient(client);
+    }
 }
 static json LiveFrame(P::Id form, const std::string& identity, const json& options, bool item) {
     Initialize();
@@ -323,5 +344,41 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
 json ItemFrame(RE::TESBoundObject* item, const json& options) {
     if (!item || !item->Is(RE::FormType::Armor, RE::FormType::Weapon, RE::FormType::Ammo)) throw std::runtime_error("Unsupported preview item");
     return LiveFrame(item->GetFormID(), fmt::format("item-{:08X}", item->GetFormID()), options, true);
+}
+json HairThumbnail(RE::BGSHeadPart* part, unsigned token) {
+    if (!part || !token) throw std::runtime_error("Модель причёски недоступна");
+    Initialize();
+    static unsigned proxyIndex = 0;
+    auto* proxy = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESObjectMISC>(0x802 + (proxyIndex % 2), "NPCStudio.esp");
+    if (!proxy) throw std::runtime_error("Обновите NPCStudio.esp для миниатюр");
+    const auto identity = fmt::format("hair-{:08X}", part->GetFormID());
+    std::uintptr_t ticket;
+    P::Id closeView;
+    {
+        std::lock_guard lock(Guard);
+        if (!Portraits.empty()) throw std::runtime_error("busy");
+        closeView = Live.view;
+        Live = {};
+        ticket = ++NextPortrait;
+        Portraits.emplace(ticket, PortraitRequest{identity, Generation, 0, 0, 1, false, token});
+    }
+    ++proxyIndex;
+    if (closeView) Api->CloseView(closeView);
+    // Провайдер повторно использует модель для одинакового FormID. Чередуем две формы без ссылок в мире.
+    auto path = std::string_view(part->GetModel());
+    if (path.starts_with("meshes\\") || path.starts_with("Meshes\\")) path.remove_prefix(7);
+    proxy->SetModel(std::string(path).c_str());
+    P::Id request = 0;
+    const auto result = Api->RequestItemStill(Client, proxy->GetFormID(), 144, 144, "turn=180", OnStill, reinterpret_cast<void*>(ticket), &request);
+    if (result != 0) {
+        std::lock_guard lock(Guard);
+        Portraits.erase(ticket);
+        Check(result, "Hair thumbnail");
+    }
+    {
+        std::lock_guard lock(Guard);
+        if (auto it = Portraits.find(ticket); it != Portraits.end()) it->second.thumbnailRequest = request;
+    }
+    return {{"kind", "hairThumbnail"}, {"pending", true}, {"identity", identity}, {"token", token}};
 }
 } // namespace NPCStudio::Preview

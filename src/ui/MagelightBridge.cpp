@@ -112,6 +112,7 @@ void PublishPreview(json update) {
 void Close() {
     ++Epoch;
     Preview::Clear();
+    StudioService::Get().CancelAppearance();
     if (!Host || !View) return;
     Host.v4()->ReleaseUIMode(Host.id());
     Host.v4()->ShowView(View, false);
@@ -132,7 +133,14 @@ void Initialize() {
     View = Host.createView("studio", page.c_str(), MAGELIGHT_API::Layer::Panel, options);
     if (!View) { logger::error("Окно NPCStudio не создано: {}", Host.v4()->GetLastErrorMessage(Host.id())); return; }
     Host.v4()->RegisterJSListenerEx(View, "studioCommand", OnCommand, nullptr);
-    Host.onClose(View, [](auto) { ++Epoch; Preview::Clear(); Host.v4()->ShowView(View, false); });
+    Host.onClose(View, [](auto) {
+        ++Epoch;
+        Preview::Clear();
+        Host.v4()->PostGameTask([](void*) {
+            if (Host.v4()->GetUIModeOwner() != Host.id()) StudioService::Get().CancelAppearance();
+        }, nullptr);
+        Host.v4()->ShowView(View, false);
+    });
     Host.onError(View, [](auto, const char* error) { logger::error("Ошибка страницы NPCStudio: {}", error); Close(); });
     try {
         auto settings = Settings();

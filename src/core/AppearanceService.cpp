@@ -1,4 +1,5 @@
 #include "core/AppearanceService.h"
+#include <unordered_map>
 
 namespace NPCStudio::Appearance {
 using json = nlohmann::json;
@@ -43,16 +44,56 @@ static bool HasMesh(RE::Actor* actor, const Head* part) {
 }
 
 static bool Compatible(RE::Actor* actor, Head* part) {
+    const auto* race = actor->GetRace();
     if (!part || part->IsDeleted() || part->type != Head::HeadPartType::kHair ||
         !part->flags.any(Head::Flag::kPlayable) || part->IsExtraPart() || part->formEditorID.empty() ||
-        !part->GetModel() || !*part->GetModel() || !part->validRaces || !part->validRaces->HasForm(actor->GetRace()))
+        !part->GetModel() || !*part->GetModel() || !race || !part->validRaces || !part->validRaces->HasForm(race))
         return false;
-    const auto* file = part->GetFile();
-    if (!file) return false;
-    const std::string_view source = file->GetFilename();
-    if (source != "Skyrim.esm" && source != "Update.esm" && source != "Dawnguard.esm" &&
-        source != "HearthFires.esm" && source != "Dragonborn.esm") return false;
+    if (!part->GetFile(0) || (part->GetFormID() >> 24) == 0xFF) return false;
     return part->flags.any(actor->GetActorBase()->IsFemale() ? Head::Flag::kFemale : Head::Flag::kMale);
+}
+
+enum class MeshKind { Invalid, Static, Physics };
+
+static MeshKind InspectMesh(std::string path) {
+    std::ranges::transform(path, path.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::ranges::replace(path, '/', '\\');
+    if (path.empty() || path.starts_with('\\') || path.contains(':') || path.contains("..") || !path.ends_with(".nif"))
+        return MeshKind::Invalid;
+    if (!path.starts_with("meshes\\")) path.insert(0, "meshes\\");
+    static std::unordered_map<std::string, MeshKind> cache;
+    if (auto it = cache.find(path); it != cache.end()) return it->second;
+    RE::BSResourceNiBinaryStream stream(path);
+    if (!stream.good()) return MeshKind::Invalid;
+    const auto size = stream.stream->totalSize;
+    if (size < 32 || size > 16 * 1024 * 1024) return MeshKind::Invalid;
+    std::string data(size, '\0');
+    if (!stream.read(data.data(), size) || !data.starts_with("Gamebryo File Format"))
+        return MeshKind::Invalid;
+    const auto kind = data.contains("HDT Skinned Mesh Physics Object") ? MeshKind::Physics : MeshKind::Static;
+    cache.emplace(std::move(path), kind);
+    return kind;
+}
+
+static bool SafeMeshes(Head* part) {
+    const auto valid = [](Head* element) {
+        if (!element || element->IsDeleted() || !element->GetModel()) return false;
+        const auto kind = InspectMesh(element->GetModel());
+        return kind == MeshKind::Static || (kind == MeshKind::Physics && GetModuleHandleW(L"hdtSMP64.dll"));
+    };
+    return valid(part) && std::ranges::all_of(part->extraParts, [&](Head* extra) {
+        return extra && extra->GetModel() && (!*extra->GetModel() || valid(extra));
+    });
+}
+
+RE::BGSHeadPart* ThumbnailPart(RE::Actor* actor, RE::FormID id) {
+    auto* part = RE::TESForm::LookupByID<Head>(id);
+    if (!actor || !actor->GetActorBase() || !Compatible(actor, part) || !SafeMeshes(part))
+        throw std::runtime_error("Модель причёски недоступна");
+    return part;
+}
+bool CanRestoreHair(RE::Actor* actor, Head* part) {
+    return Compatible(actor, part) && SafeMeshes(part);
 }
 
 static json Choice(const RE::TESForm* form, std::string label) {
@@ -108,8 +149,12 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     result["color"] = color ? color->GetFormID() : 0;
     result["hairAvailable"] = HasMesh(actor, hair);
     auto& hairs = result["hairs"] = json::array();
-    for (auto* part : RE::TESDataHandler::GetSingleton()->GetFormArray<Head>())
-        if (Compatible(actor, part)) hairs.push_back(Choice(part, HairName(part)));
+    for (auto* part : RE::TESDataHandler::GetSingleton()->GetFormArray<Head>()) {
+        if (!Compatible(actor, part)) continue;
+        auto row = Choice(part, HairName(part));
+        row["plugin"] = part->GetFile()->GetFilename();
+        hairs.push_back(std::move(row));
+    }
     std::sort(hairs.begin(), hairs.end(), [](const json& left, const json& right) {
         return left.at("name").get_ref<const std::string&>() < right.at("name").get_ref<const std::string&>();
     });
@@ -132,45 +177,68 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     return result;
 }
 
-json Apply(RE::Actor* actor, bool managed, const json& saved, const json& command) {
+void TryOn(RE::Actor* actor, bool managed, const json& saved, const json& command, Draft& draft) {
     if (!Ready(actor, managed)) throw std::runtime_error("Внешность этого NPC сейчас недоступна");
-    auto* original = BaseHair(actor);
-    auto* current = original;
-    if (!managed) {
-        auto* previous = Resolve<Head>(saved.value("hair", json(nullptr)));
-        if (HasMesh(actor, previous)) current = previous;
+    if (!draft.target) {
+        auto* current = BaseHair(actor);
+        if (!managed) if (auto* previous = SavedHair(saved); HasMesh(actor, previous)) current = previous;
+        auto* color = SavedColor(saved);
+        if (!color) color = BaseColor(actor);
+        draft = {actor->GetHandle(), current, current, color, color};
     }
     auto* hair = RE::TESForm::LookupByID<Head>(command.at("hair").get<RE::FormID>());
     const auto colorId = command.at("color").get<RE::FormID>();
     auto* color = colorId ? RE::TESForm::LookupByID<Color>(colorId) : nullptr;
-    auto* currentColor = SavedColor(saved);
-    if (!currentColor) currentColor = BaseColor(actor);
-    if (hair != current && !Compatible(actor, hair)) throw std::runtime_error("Причёска несовместима с этим NPC");
-    if ((colorId && !color) || (color != currentColor && !CompatibleColor(actor, color)))
+    if (hair != draft.originalHair && (!Compatible(actor, hair) || !SafeMeshes(hair)))
+        throw std::runtime_error("Причёска несовместима, отсутствует модель или требуется Faster HDT-SMP");
+    if ((colorId && !color) || (color != draft.originalColor && !CompatibleColor(actor, color)))
         throw std::runtime_error("Цвет недоступен для этого NPC");
-    if (!HasMesh(actor, current)) throw std::runtime_error("Снимите головной убор и дождитесь загрузки волос");
-    auto result = saved;
-    if (hair != current) {
-        actor->ChangeHeadPart(current, hair);
+    if (color != draft.originalColor && !draft.originalColor)
+        throw std::runtime_error("Исходный цвет волос недоступен");
+    if (!HasMesh(actor, draft.hair) && HasMesh(actor, draft.originalHair)) draft.hair = draft.originalHair;
+    if (!HasMesh(actor, draft.hair)) throw std::runtime_error("Снимите головной убор и дождитесь загрузки волос");
+    if (hair != draft.hair) {
+        auto* previous = draft.hair;
+        draft.hair = hair;
+        actor->ChangeHeadPart(previous, hair);
         if (!HasMesh(actor, hair)) throw std::runtime_error("Движок не подтвердил замену волос");
-        if (managed) actor->GetActorBase()->ChangeHeadPart(hair);
-        result["hair"] = !managed && hair == original ? json(nullptr) : Address(hair);
     }
-    if (color != currentColor) {
-        if (managed) actor->GetActorBase()->SetHairColor(color);
-        result["color"] = Address(color);
-    }
+    draft.color = color;
     Tint(actor, color);
+}
+
+json Commit(RE::Actor* actor, bool managed, const json& saved, Draft& draft) {
+    auto result = saved;
+    if (draft.hair != draft.originalHair) {
+        if (managed) actor->GetActorBase()->ChangeHeadPart(draft.hair);
+        result["hair"] = !managed && draft.hair == BaseHair(actor) ? json(nullptr) : Address(draft.hair);
+    }
+    if (draft.color != draft.originalColor) {
+        if (managed) actor->GetActorBase()->SetHairColor(draft.color);
+        result["color"] = Address(draft.color);
+    }
     logger::info("Внешность NPC {:08X}: волосы {:08X} → {:08X}, цвет {:08X}, слот={}",
-        actor->GetFormID(), current->GetFormID(), hair->GetFormID(), colorId, managed);
+        actor->GetFormID(), draft.originalHair->GetFormID(), draft.hair->GetFormID(), draft.color ? draft.color->GetFormID() : 0, managed);
+    draft = {};
     return result;
+}
+
+void Cancel(Draft& draft) {
+    auto target = draft.target.get();
+    auto* actor = target ? target->As<RE::Actor>() : nullptr;
+    if (actor && actor->Is3DLoaded() && actor->GetFaceNode()) {
+        if (draft.hair != draft.originalHair && HasMesh(actor, draft.hair) && !HasMesh(actor, draft.originalHair))
+            actor->ChangeHeadPart(draft.hair, draft.originalHair);
+        Tint(actor, draft.originalColor);
+    }
+    draft = {};
 }
 
 bool RestoreExternal(RE::Actor* actor, const json& saved) {
     if (!Ready(actor, false)) return false;
     auto* original = BaseHair(actor);
     auto* hair = SavedHair(saved);
-    if (!Compatible(actor, hair)) hair = nullptr;
+    if (!CanRestoreHair(actor, hair)) hair = nullptr;
     if (!hair && !HasMesh(actor, original)) return false;
     if (hair && !HasMesh(actor, hair)) {
         if (!HasMesh(actor, original)) return false;
