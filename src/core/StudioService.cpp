@@ -3,6 +3,7 @@
 #include "core/StudioService.h"
 #include "core/StateCodec.h"
 #include "core/EquipmentService.h"
+#include "core/AppearanceService.h"
 #include "core/NameCompatibility.h"
 #include "ui/MagelightBridge.h"
 #include <fstream>
@@ -40,15 +41,19 @@ void StudioService::Initialize() {
                 !actors.insert(slot.actor->GetFormID()).second)
                 throw std::runtime_error("ESP и манифест слотов не совпадают");
             slot.defaultName = slot.base->GetName();
+            slot.defaultRace = slot.base->GetRace();
+            if (slot.base->headRelatedData) slot.defaultHairColor = slot.base->headRelatedData->hairColor;
             Names::Protect(slot.base);
             resolved.push_back(std::move(slot));
         }
         slots = std::move(resolved);
         ready = true;
         worker = std::jthread([this](std::stop_token stop) {
+            unsigned ticks = 0;
             while (!stop.stop_requested()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
-                if (!workPending.load() || taskQueued.exchange(true)) continue;
+                const bool checkExternal = ++ticks % 4 == 0 && externalWork.load();
+                if ((!workPending.load() && !checkExternal) || taskQueued.exchange(true)) continue;
                 const auto epoch = worldEpoch.load();
                 SKSE::GetTaskInterface()->AddTask([this, epoch] {
                     if (epoch == worldEpoch.load()) Pump();
@@ -86,14 +91,32 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.7.3"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.0"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
-        {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
+        {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
+}
+
+void StudioService::PickAppearanceTarget() {
+    appearanceTarget.reset();
+    if (auto* crosshair = RE::CrosshairPickData::GetSingleton()) appearanceTarget = crosshair->GetActiveTarget();
 }
 
 json StudioService::Execute(const json& command) {
     const auto action = command.at("action").get<std::string>();
     if (action == "state") return Snapshot();
+    if (action == "openState") {
+        auto state = Snapshot();
+        auto target = appearanceTarget.get();
+        auto* actor = target ? target->As<RE::Actor>() : nullptr;
+        if (!actor || actor->IsPlayerRef() || actor->IsDead() || !actor->GetActorBase()) return state;
+        for (const auto& slot : slots) {
+            if (slot.actor != actor) continue;
+            if (assignments.contains(std::to_string(slot.id))) state["appearanceTarget"] = {{"id", slot.id}};
+            return state;
+        }
+        state["appearanceTarget"] = {{"reference", actor->GetFormID()}};
+        return state;
+    }
     if (action == "deletePreset" || action == "deleteCategory") { Equipment::DeleteCustom(action, command.at("key").get<std::string>()); return Snapshot(); }
     if (action == "portraitCache") {
         const auto& identities = command.at("identities");
@@ -119,6 +142,43 @@ json StudioService::Execute(const json& command) {
     if (action == "editPreset") { Equipment::SaveEditedPreset(command); return Snapshot(); }
     if (action == "presetCatalog") return {{"partial",true},{"catalog",Equipment::Describe(nullptr, command).at("catalog")}};
     auto* player = RE::PlayerCharacter::GetSingleton();
+    if (action == "appearance" || action == "applyAppearance") {
+        const bool managed = command.contains("id");
+        RE::Actor* actor = nullptr;
+        json* assignment = nullptr;
+        RE::NiPointer<RE::TESObjectREFR> target;
+        json saved = json::object();
+        if (managed) {
+            auto& slot = Find(command.at("id").get<unsigned>());
+            const auto key = std::to_string(slot.id);
+            if (!assignments.contains(key) || assignments.at(key).at("identity") != command.at("identity"))
+                throw std::runtime_error("Персонаж в этом слоте уже изменился. Обновите список");
+            if (restoring.contains(slot.id)) throw std::runtime_error("Дождитесь восстановления снаряжения");
+            actor = slot.actor;
+            assignment = &assignments.at(key);
+            saved = assignment->value("appearance", json::object());
+        } else {
+            target = appearanceTarget.get();
+            actor = target ? target->As<RE::Actor>() : nullptr;
+            if (!actor || !actor->GetActorBase() || actor->GetFormID() != command.at("reference").get<RE::FormID>())
+                throw std::runtime_error("NPC под прицелом больше недоступен");
+            if (auto it = externalLooks.find(actor->GetFormID()); it != externalLooks.end() &&
+                it->second.base == actor->GetActorBase()->GetFormID()) saved = it->second.look;
+        }
+        if (action == "applyAppearance") {
+            if (!managed && externalLooks.size() >= 128 && !externalLooks.contains(actor->GetFormID()))
+                throw std::runtime_error("Достигнут лимит внешних NPC");
+            Preview::Clear();
+            saved = Appearance::Apply(actor, managed, saved, command);
+            if (managed) (*assignment)["appearance"] = saved;
+            else if (!saved.empty()) {
+                externalLooks.insert_or_assign(actor->GetFormID(), ExternalLook{
+                    actor->GetActorBase()->GetFormID(), saved, actor->GetFaceNode()});
+                externalWork = true;
+            }
+        }
+        return {{"partial", true}, {"appearance", Appearance::Describe(actor, managed, saved)}};
+    }
     if (action == "itemPreview") {
         const auto& item = command.at("item");
         auto* form = RE::TESDataHandler::GetSingleton()->LookupForm(item.at("form").get<unsigned>(), item.at("plugin").get<std::string>());
@@ -218,6 +278,7 @@ json StudioService::Execute(const json& command) {
             assignments[key].erase("headParts");
             assignments[key].erase("faceMorphs");
             assignments[key].erase("facePresets");
+            assignments[key].erase("appearance");
             QueueRestore(slot);
         } else if (action == "rename") {
             auto name = command.at("name").get<std::string>();
@@ -282,7 +343,14 @@ void StudioService::QueueRestore(Slot& slot, const std::string& preset) {
     UI::SetWorldWork(true);
 }
 void StudioService::Pump() {
-    if (!loaded || !stateValid) { restoring.clear(); workPending = false; UI::SetWorldWork(false); return; }
+    if (!loaded || !stateValid) { restoring.clear(); workPending = false; externalWork = false; UI::SetWorldWork(false); return; }
+    for (auto& [id, edit] : externalLooks) {
+        auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+        auto* base = actor ? actor->GetActorBase() : nullptr;
+        auto* node = base && base->GetFormID() == edit.base && actor->Is3DLoaded() ? actor->GetFaceNode() : nullptr;
+        if (!node) edit.appliedNode = nullptr;
+        else if (node != edit.appliedNode && Appearance::RestoreExternal(actor, edit.look)) edit.appliedNode = node;
+    }
     if (settlingTicks) --settlingTicks;
     for (auto it = restoring.begin(); it != restoring.end();) {
         auto& slot = Find(it->first);
@@ -326,6 +394,12 @@ void StudioService::Pump() {
                         else logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
                     }
                 }
+                const auto look = assignments[key].value("appearance", json::object());
+                if (auto* hair = Appearance::SavedHair(look); hair && hair != slot.base->GetHeadPartByType(RE::BGSHeadPart::HeadPartType::kHair))
+                    slot.base->ChangeHeadPart(hair);
+                auto* color = Appearance::SavedColor(look);
+                if (!color) color = targetRace == slot.defaultRace && slot.defaultHairColor ? slot.defaultHairColor : face->defaultHairColor;
+                slot.base->SetHairColor(color);
                 if (assignments[key].contains("faceMorphs")) {
                     const auto& morphs = assignments[key]["faceMorphs"];
                     const auto& presets = assignments[key].at("facePresets");
@@ -342,6 +416,7 @@ void StudioService::Pump() {
                 ++it; continue;
             }
             Races::SynchronizeSkin(slot.actor);
+            slot.actor->UpdateHairColor();
             if (!job.preset.empty()) {
                 Equipment::Execute(slot.actor, {{"action", "applyEquipmentPreset"}, {"preset", job.preset}});
                 assignments[key]["loadout"] = Equipment::Capture(slot.actor);
@@ -363,7 +438,7 @@ void StudioService::Pump() {
     workPending = !restoring.empty() || settlingTicks > 0;
     UI::SetWorldWork(workPending.load());
 }
-void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; restoring.clear(); settlingTicks = 0; workPending = false; loaded = false; UI::SetWorldWork(false); }
+void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; restoring.clear(); settlingTicks = 0; workPending = false; externalWork = false; appearanceTarget.reset(); loaded = false; UI::SetWorldWork(false); }
 
 void StudioService::RestoreNames() {
     if (!ready || !stateValid) return;
@@ -390,6 +465,7 @@ void StudioService::AfterLoad(bool success) {
     }
     if (success) {
         RestoreNames();
+        externalWork = stateValid && !externalLooks.empty();
         if (stateValid) for (auto& slot : slots)
             if (assignments.contains(std::to_string(slot.id)) && !slot.actor->IsDisabled()) QueueRestore(slot);
     }
@@ -400,6 +476,7 @@ void StudioService::NewGame() {
     UI::SetWorldWork(false);
     Preview::Clear();
     assignments = json::object();
+    externalLooks.clear(); externalWork = false; appearanceTarget.reset();
     usedSlots.clear(); restoring.clear(); workPending = false;
     stateValid = true;
     if (ready) error.clear();
@@ -415,6 +492,7 @@ void StudioService::Revert() {
     stateValid = true;
     if (ready) error.clear();
     assignments = json::object();
+    externalLooks.clear(); externalWork = false; appearanceTarget.reset();
 }
 
 void StudioService::Save(SKSE::SerializationInterface* stream) {
@@ -438,13 +516,16 @@ void StudioService::Save(SKSE::SerializationInterface* stream) {
             assignments[key]["facePresets"] = slot.base->faceData->parts;
         }
     }
-    const auto text = json{{"poolVersion", 3}, {"assignments", assignments}, {"usedSlots", usedSlots}}.dump();
+    auto external = json::array();
+    for (const auto& [id, edit] : externalLooks) external.push_back({{"reference", id}, {"base", edit.base}, {"look", edit.look}});
+    const auto text = json{{"poolVersion", 3}, {"assignments", assignments}, {"usedSlots", usedSlots}, {"externalAppearance", external}}.dump();
     if (!stream->WriteRecord(StateTag, StateVersion, text.data(), static_cast<std::uint32_t>(text.size())))
         logger::error("Не удалось сохранить состояние NPCStudio");
 }
 
 void StudioService::Load(SKSE::SerializationInterface* stream) {
     assignments = json::object();
+    externalLooks.clear();
     std::uint32_t type, version, length;
     bool seen = false;
     try {
@@ -458,6 +539,19 @@ void StudioService::Load(SKSE::SerializationInterface* stream) {
             auto decoded = DecodePoolState(saved);
             assignments = std::move(decoded.assignments);
             usedSlots = std::move(decoded.used);
+            const auto external = saved.value("externalAppearance", json::array());
+            if (external.is_array() && external.size() <= 128) for (const auto& row : external) {
+                try {
+                    RE::FormID id, base;
+                    const auto& look = row.at("look");
+                    if (!look.is_object() || !stream->ResolveFormID(row.at("reference").get<RE::FormID>(), id) ||
+                        !stream->ResolveFormID(row.at("base").get<RE::FormID>(), base)) continue;
+                    // Проверяем формат сохранённых ключей до передачи в цикл обновления.
+                    Appearance::SavedHair(look);
+                    Appearance::SavedColor(look);
+                    externalLooks.emplace(id, ExternalLook{base, look});
+                } catch (const std::exception& e) { logger::warn("Пропущена внешность NPC: {}", e.what()); }
+            }
         }
     } catch (const std::exception& e) {
         stateValid = false;

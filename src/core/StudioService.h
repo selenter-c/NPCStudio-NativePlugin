@@ -18,6 +18,7 @@ public:
     void Load(SKSE::SerializationInterface* stream);
     void Revert();
     void Pump();
+    void PickAppearanceTarget();
 private:
     struct Slot {
         unsigned id = 0;
@@ -25,11 +26,21 @@ private:
         RE::TESNPC* base = nullptr;
         RE::Actor* actor = nullptr;
         std::string defaultName;
+        RE::TESRace* defaultRace = nullptr;
+        RE::BGSColorForm* defaultHairColor = nullptr;
     };
     std::vector<Slot> slots;
     RE::TESObjectREFR* holdingAnchor = nullptr;
     nlohmann::json assignments = nlohmann::json::object();
     std::set<unsigned> usedSlots;
+    struct ExternalLook {
+        RE::FormID base = 0;
+        nlohmann::json look;
+        const RE::BSFaceGenNiNode* appliedNode = nullptr;
+    };
+    std::map<RE::FormID, ExternalLook> externalLooks;
+    RE::ObjectRefHandle appearanceTarget;
+    std::atomic<bool> externalWork = false;
     struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; bool raceRequested = false; bool appearanceRestored = false; };
     std::map<unsigned, RestoreJob> restoring;
     unsigned settlingTicks = 0;

@@ -14,6 +14,7 @@ static MAGELIGHT_API::ViewId View = 0;
 static std::atomic<std::uint64_t> Epoch = 0;
 static bool WorldWork = false;
 void SetWorldWork(bool pending) {
+    if (WorldWork == pending) return;
     WorldWork = pending;
     if (Host && View && Host.v4()->GetUIModeOwner() == Host.id())
         Host.v4()->RequestUIMode(View, pending ? 0 : MAGELIGHT_API::kUIModeFlagPause);
@@ -46,6 +47,7 @@ static void Toggle(void*) {
     auto state = StudioService::Get().Execute({{"action", "state"}});
     if (!state.value("worldLoaded", false) || !ui || ui->GameIsPaused() || ui->IsMenuOpen(RE::Console::MENU_NAME) ||
         ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return;
+    StudioService::Get().PickAppearanceTarget();
     Host.v4()->RequestUIMode(View, WorldWork ? 0 : MAGELIGHT_API::kUIModeFlagPause);
 }
 class HotkeySink : public RE::BSTEventSink<RE::InputEvent*> {

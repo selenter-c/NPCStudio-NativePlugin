@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(NPCStudio VERSION 0.7.3 LANGUAGES CXX)
+project(NPCStudio VERSION 0.8.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -20,6 +20,7 @@ add_commonlibsse_plugin(NPCStudio AUTHOR "NPCStudio" USE_ADDRESS_LIBRARY SOURCES
     src/plugin.cpp
     src/core/StudioService.cpp
     src/core/EquipmentService.cpp
+    src/core/AppearanceService.cpp
     src/core/NameCompatibility.cpp
     src/core/RaceService.cpp
     src/preview/ActorPreview.cpp

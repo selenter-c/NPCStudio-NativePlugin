@@ -45,6 +45,6 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     serialization->SetSaveCallback([](auto* stream) { NPCStudio::StudioService::Get().Save(stream); });
     serialization->SetLoadCallback([](auto* stream) { NPCStudio::StudioService::Get().Load(stream); });
     serialization->SetRevertCallback([](auto*) { NPCStudio::StudioService::Get().Revert(); });
-    logger::info("NPCStudio 0.7.3: Magelight, постоянный пул 200+200, сохранение SKSE");
+    logger::info("NPCStudio 0.8.0: Magelight, постоянный пул 200+200, сохранение SKSE");
     return true;
 }
