@@ -3,11 +3,16 @@
 
 namespace NPCStudio::Appearance {
 struct Draft {
+    struct Part {
+        RE::BGSHeadPart* original = nullptr;
+        RE::BGSHeadPart* current = nullptr;
+    };
     RE::ObjectRefHandle target;
     RE::BGSHeadPart* originalHair = nullptr;
     RE::BGSHeadPart* hair = nullptr;
     RE::BGSColorForm* originalColor = nullptr;
     RE::BGSColorForm* color = nullptr;
+    std::array<Part, 3> faceParts{};
 };
 nlohmann::json Describe(RE::Actor* actor, bool managed, const nlohmann::json& saved);
 nlohmann::json Height(RE::Actor* actor);
@@ -20,6 +25,8 @@ bool RestoreExternal(RE::Actor* actor, const nlohmann::json& saved);
 RE::BGSColorForm* SavedColor(const nlohmann::json& saved);
 RE::BGSHeadPart* SavedHair(const nlohmann::json& saved);
 bool CanRestoreHair(RE::Actor* actor, RE::BGSHeadPart* part);
+bool OverridesHeadPart(const nlohmann::json& saved, RE::BGSHeadPart* part);
+void RestoreBaseFaceParts(RE::Actor* actor, const nlohmann::json& saved);
 RE::BGSHeadPart* VisualHair(RE::Actor* actor, const nlohmann::json& saved);
 bool HairAwaitingBones(RE::Actor* actor, RE::BGSHeadPart* hair);
 }

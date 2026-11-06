@@ -91,7 +91,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.5"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.6"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -237,9 +237,9 @@ json StudioService::Execute(const json& command) {
                 throw std::runtime_error("Достигнут лимит внешних NPC");
             Preview::Clear();
             if (hairDraft.target && hairDraft.target.get().get() != actor) CancelAppearance();
-            const bool changedHair = Appearance::TryOn(actor, managed, saved, command, hairDraft);
+            const bool changedParts = Appearance::TryOn(actor, managed, saved, command, hairDraft);
             if (action == "tryAppearance") {
-                if (changedHair) return QueueLookFrame(actor, hairDraft.hair, previewIdentity, command);
+                if (changedParts) return QueueLookFrame(actor, hairDraft.hair, previewIdentity, command);
                 if (lookFrame && lookFrame->identity == previewIdentity) {
                     lookFrame->options = command;
                     return {{"partial", true}, {"preview", {{"identity", previewIdentity}, {"kind", "actor"}, {"pending", true}}}};
@@ -497,13 +497,13 @@ void StudioService::Pump() {
                             logger::warn("Не найдена сохранённая часть головы слота {}: {}", slot.id, part.dump());
                             continue;
                         }
-                        if (look.contains("hair") && (head->type == RE::BGSHeadPart::HeadPartType::kHair ||
-                            (savedHair && std::ranges::find(savedHair->extraParts, head) != savedHair->extraParts.end()))) continue;
+                        if (Appearance::OverridesHeadPart(look, head)) continue;
                         slot.base->ChangeHeadPart(head);
                     }
                 }
                 if (savedHair && savedHair != slot.base->GetHeadPartByType(RE::BGSHeadPart::HeadPartType::kHair) &&
                     Appearance::CanRestoreHair(slot.actor, savedHair)) slot.base->ChangeHeadPart(savedHair);
+                Appearance::RestoreBaseFaceParts(slot.actor, look);
                 auto* color = Appearance::SavedColor(look);
                 if (!color) color = targetRace == slot.defaultRace && slot.defaultHairColor ? slot.defaultHairColor : face->defaultHairColor;
                 slot.base->SetHairColor(color);
