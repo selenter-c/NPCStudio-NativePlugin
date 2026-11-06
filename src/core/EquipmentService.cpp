@@ -94,6 +94,11 @@ json Library() {
         preview["error"] = "";
         try { for (const auto& item : preset.at("items")) Resolve(item); }
         catch (const std::exception& e) { preview["available"] = false; preview["error"] = e.what(); }
+        preview["custom"] = id.starts_with("user-");
+        for (auto& item : preview["items"]) {
+            try { item = ItemInfo(Resolve(item), item.value("count", 1), false); }
+            catch (...) { item["name"] = item.value("plugin", std::string()) + " | " + std::to_string(item.value("form", 0)); }
+        }
         presets.push_back(std::move(preview));
     }
     std::set<std::string> categories{"Мои наборы"};
@@ -139,6 +144,27 @@ void DeleteCustom(const std::string& action, const std::string& key) {
     if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось сохранить категории");
 }
 
+void SaveEditedPreset(const json& command) {
+    const auto name = command.at("name").get<std::string>();
+    const auto category = command.at("category").get<std::string>();
+    if (!ValidName(name) || !ValidName(category)) throw std::runtime_error("Некорректное имя набора");
+    auto id = command.value("preset", std::string());
+    if (id.empty()) id = fmt::format("user-{}-{}", GetTickCount64(), GetCurrentProcessId());
+    if (!id.starts_with("user-") || id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos) throw std::runtime_error("Можно изменять только пользовательский набор");
+    const auto& source = command.at("items");
+    if (!source.is_array() || source.empty() || source.size() > 64) throw std::runtime_error("Неверный состав набора");
+    json items = json::array(); std::unordered_set<RE::TESBoundObject*> seen;
+    for (const auto& item : source) {
+        auto* object = Resolve(item); const auto count = item.value("count", 1u);
+        if (!count || count > 1000 || !seen.insert(object).second) throw std::runtime_error("Неверное количество или повтор предмета в наборе");
+        auto saved = Address(object); saved["count"] = count; items.push_back(saved);
+    }
+    std::filesystem::create_directories(PresetDirectory);
+    const auto path = PresetDirectory / (id + ".json"); auto temp = path; temp += ".tmp";
+    { std::ofstream file(temp); file << json{{"schemaVersion",1},{"name",name},{"category",category},{"items",items}}.dump(2); file.flush(); if (!file) throw std::runtime_error("Не удалось записать набор на диск"); }
+    if (!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось завершить сохранение набора");
+}
+
 void ValidatePreset(const std::string& id) {
     const auto presets = ReadPresets();
     const auto found = presets.find(id);
@@ -153,7 +179,7 @@ void ValidatePreset(const std::string& id) {
 
 json Describe(RE::Actor* actor, const json& command) {
     json inventory = json::array(), presets = json::array(), catalog = json::array();
-    for (auto& [object, entry] : actor->GetInventory()) {
+    if (actor) for (auto& [object, entry] : actor->GetInventory()) {
         if (!Supported(object) || entry.first <= 0) continue;
         try { inventory.push_back(ItemInfo(object, entry.first, entry.second && entry.second->IsWorn())); }
         catch (const std::exception&) { /* Динамические предметы не входят в переносимые наборы. */ }
@@ -191,7 +217,7 @@ static void GiveAndEquip(RE::Actor* actor, RE::TESBoundObject* object, unsigned 
     const int existing = it == inventory.end() ? 0 : std::max(0, it->second.first);
     if (existing < static_cast<int>(count)) actor->AddObjectToContainer(object, nullptr, static_cast<int>(count) - existing, nullptr);
     // Без forceEquip: предмет впоследствии можно снять обычными средствами.
-    RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, nullptr, count, nullptr, false, false, false, true);
+    RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, nullptr, object->Is(RE::FormType::Ammo) ? count : 1, nullptr, false, false, false, true);
 }
 
 json Capture(RE::Actor* actor) {
@@ -281,7 +307,7 @@ void Execute(RE::Actor* actor, const json& command) {
             auto* object = Resolve(item);
             const auto count = item.value("count", 1u);
             if (!count || count > 1000 || !seen.insert(object).second) throw std::runtime_error("Неверное количество или повтор предмета в наборе");
-            items.emplace_back(object, object->Is(RE::FormType::Ammo) ? count : 1);
+            items.emplace_back(object, count);
         }
         for (auto& [object, entry] : actor->GetInventory()) {
             if (!Supported(object) || entry.first <= 0 || !entry.second || !entry.second->IsWorn()) continue;
@@ -293,29 +319,6 @@ void Execute(RE::Actor* actor, const json& command) {
         }
         for (auto [object, count] : items) GiveAndEquip(actor, object, count);
         logger::info("Набор '{}' применён к {:08X}", found->first, actor->GetFormID());
-    } else if (action == "saveEquipmentPreset") {
-        const auto name = command.at("name").get<std::string>();
-        if (!ValidName(name)) throw std::runtime_error("Некорректное имя набора");
-        json items = json::array();
-        for (auto& [object, entry] : actor->GetInventory()) {
-            if (!Supported(object) || entry.first <= 0 || !entry.second || !entry.second->IsWorn()) continue;
-            auto item = Address(object);
-            item["count"] = object->Is(RE::FormType::Ammo) ? std::min(entry.first, 1000) : 1;
-            items.push_back(std::move(item));
-        }
-        if (items.empty() || items.size() > 64) throw std::runtime_error("Наденьте от 1 до 64 предметов перед сохранением набора");
-        std::filesystem::create_directories(PresetDirectory);
-        auto path = PresetDirectory / fmt::format("user-{}-{}.json", GetTickCount64(), GetCurrentProcessId());
-        auto temp = path; temp += ".tmp";
-        {
-            std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-            const auto category = command.value("category", std::string("Мои наборы"));
-            if (!ValidName(category)) throw std::runtime_error("Некорректная категория");
-            file << json{{"schemaVersion", 1}, {"name", name}, {"category", category}, {"items", items}}.dump(2);
-            file.flush();
-            if (!file) throw std::runtime_error("Не удалось записать набор на диск");
-        }
-        if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Не удалось завершить сохранение набора");
     } else throw std::runtime_error("Неизвестная команда снаряжения");
 }
 }

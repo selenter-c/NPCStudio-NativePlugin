@@ -16,6 +16,9 @@ int main() {
             Require(std::abs(std::pow(1.00150001049f, delta) - zoom) < .0001f);
             Require(std::abs(delta + ZoomDelta(zoom, 1.f)) < .001f);
         }
+        Require(std::abs(CameraScale(.25f) - 2.6f) < .00001f);
+        Require(std::abs(CameraScale(1.f) - .8375f) < .00001f);
+        Require(std::abs(CameraScale(4.f) - .45f) < .00001f);
         Require(ValidPortrait(144, 144));
         Require(!ValidPortrait(0xffffffff, 144) && !ValidPortrait(144, 143));
         Require(!ValidPortrait(144, 0) && !ValidPortrait(0, 144));

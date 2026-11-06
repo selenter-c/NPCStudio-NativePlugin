@@ -13,7 +13,7 @@
 #define STBI_WRITE_NO_STDIO
 #pragma warning(push)
 #pragma warning(disable : 4244 4267 4996)
-#include "nifviewer/stb_image_write.h"
+#include "thirdparty/stb_image_write.h"
 #pragma warning(pop)
 
 namespace NPCStudio::Preview {
@@ -206,7 +206,7 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     const auto panY = std::clamp(options.value("panY", 0.f), -.4f, .4f);
     if (!std::isfinite(panX) || !std::isfinite(panY)) throw std::runtime_error("Invalid camera offset");
     static const std::unordered_set<std::string> lights{"studio", "daylight", "hearth", "torchlight", "moonlight", "here"};
-    if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(zoom) || zoom < .5f || zoom > 2.5f || !lights.contains(light))
+    if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(zoom) || zoom < .25f || zoom > 4.f || !lights.contains(light))
         throw std::runtime_error("Invalid preview camera");
     P::Id old = 0, view = 0;
     bool open;
@@ -229,6 +229,7 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
         else Check(Api->OpenActor(Client, "actor", form, 480, 640, 0, &view), "OpenActor");
         if (!item) {
             Check(Api->SetHint(view, "pose", "captured"), "SetHint pose");
+            Check(Api->SetHint(view, "weapons", "on"), "SetHint weapons");
             // Замораживаем скопированную позу: граф может содержать боевой цикл под обычным idle.
             Check(Api->SetHint(view, "motion", "false"), "SetHint motion");
         }
@@ -238,7 +239,7 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     if (!view) throw std::runtime_error("Phantasm returned an empty view");
     // Orbit принимает градусы, Zoom — величину колеса: zoom *= pow(1.0015, delta).
     if (yaw != previousYaw || pitch != previousPitch) Check(Api->Orbit(view, OrbitDelta(previousYaw, yaw), pitch - previousPitch), "Orbit");
-    const auto cameraScale = [](float value) { return .95f - (value - .5f) * .225f; };
+    const auto cameraScale = CameraScale;
     // При возврате scale к 1 провайдер сбрасывает цель камеры; следующий anchored zoom задаёт её заново.
     // Это перемещение внутри renderer: HTML-текстура остаётся на месте.
     float oldPanX, oldPanY;
@@ -246,8 +247,8 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     if (open || zoom != previousZoom || panX != oldPanX || panY != oldPanY) {
         const auto scale = cameraScale(zoom);
         if (!open) Check(Api->Zoom(view, ZoomDelta(cameraScale(previousZoom), 1.f), .5f, .5f), "Reset camera target");
-        const auto u = std::clamp(.5f - panX * scale / (1.f - scale), 0.f, 1.f);
-        const auto v = std::clamp(.5f - panY * scale / (1.f - scale), 0.f, 1.f);
+        const auto u = scale >= .9999f ? .5f : std::clamp(.5f - panX * scale / (1.f - scale), 0.f, 1.f);
+        const auto v = scale >= .9999f ? .5f : std::clamp(.5f - panY * scale / (1.f - scale), 0.f, 1.f);
         Check(Api->Zoom(view, ZoomDelta(1.f, scale), u, v), "Position camera target");
     }
     if (light != previousLight) Check(Api->SetHint(view, "lighting", light.c_str()), "SetHint");
@@ -294,8 +295,8 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
             shot.y = std::clamp(options.value("cropY", 0.f), 0.f, 1.f);
             shot.size = std::clamp(options.value("cropSize", .5f), .05f, 1.f);
             // Отдельный полнофигурный снимок имеет базовый масштаб камеры.
-            const auto scale = .95f - (std::clamp(options.value("zoom", 1.f), .5f, 2.5f) - .5f) * .225f;
-            const auto limit = (1.f - scale) / (2.f * scale);
+            const auto scale = CameraScale(std::clamp(options.value("zoom", 1.f), .25f, 4.f));
+            const auto limit = std::max(0.f, (1.f - scale) / (2.f * scale));
             const auto px = std::clamp(options.value("panX", 0.f), -limit, limit);
             const auto py = std::clamp(options.value("panY", 0.f), -limit, limit);
             shot.x = .5f + (shot.x - .5f - px) * scale;
@@ -307,10 +308,10 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
     logger::info("Портрет: запрос ticket={}, actor={:08X}, editor={}, live={}", ticket, actor->GetFormID(), editorCapture, Live.view);
     P::Id request = 0;
-    const auto hints = fmt::format("turn={};pitch={};lighting={}", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
+    const auto hints = fmt::format("turn={};pitch={};lighting={};weapons=on", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
     const auto result = editorCapture ?
         Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 2, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
-        Api->RequestStill(Client, actor->GetFormID(), 144, 144, 1, OnStill, reinterpret_cast<void*>(ticket), &request);
+        Api->RequestStillHinted(Client, actor->GetFormID(), 144, 144, 1, "weapons=on", OnStill, reinterpret_cast<void*>(ticket), &request);
     logger::info("Портрет: provider result={}, request={}", result, request);
     if (result != 0) {
         std::lock_guard lock(Guard);

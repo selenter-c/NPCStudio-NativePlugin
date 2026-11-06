@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.7.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.7.2"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -116,6 +116,8 @@ json StudioService::Execute(const json& command) {
     if (!ready || !stateValid) throw std::runtime_error(error.empty() ? "Пул недоступен" : error);
     if (!loaded || !RE::PlayerCharacter::GetSingleton()->GetParentCell())
         throw std::runtime_error("Сначала загрузите сохранение или начните новую игру");
+    if (action == "editPreset") { Equipment::SaveEditedPreset(command); return Snapshot(); }
+    if (action == "presetCatalog") return {{"partial",true},{"catalog",Equipment::Describe(nullptr, command).at("catalog")}};
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (action == "itemPreview") {
         const auto& item = command.at("item");
@@ -224,7 +226,7 @@ json StudioService::Execute(const json& command) {
             Names::Apply(slot.base, slot.actor, name);
             assignments[key]["name"] = name;
         } else if (action == "equipment" || action == "giveItem" || action == "unequipItem" ||
-            action == "applyEquipmentPreset" || action == "saveEquipmentPreset") {
+            action == "applyEquipmentPreset") {
             if (restoring.contains(slot.id)) throw std::runtime_error("Снаряжение ещё восстанавливается");
             Equipment::Execute(slot.actor, command);
             if (action == "giveItem" || action == "unequipItem" || action == "applyEquipmentPreset") {

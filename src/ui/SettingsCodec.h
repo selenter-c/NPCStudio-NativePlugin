@@ -7,7 +7,7 @@ inline nlohmann::json DefaultSettings(const std::string &systemLanguage) {
             {"key", 9},
             {"modifiers", 1},
             {"language", systemLanguage == "ru" ? "ru" : "en"},
-            {"theme", "amethyst"}};
+            {"theme", "ember"}};
 }
 inline nlohmann::json NormalizeSettings(const nlohmann::json &input, const nlohmann::json &fallback) {
     const auto key = input.value("key", fallback.at("key").get<unsigned>());

@@ -22,7 +22,7 @@ void SetWorldWork(bool pending) {
 static std::atomic<unsigned> Hotkey = 0x09;
 static std::atomic<unsigned> Modifiers = 1;
 static std::string Language = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN ? "ru" : "en";
-static std::string Theme = "amethyst";
+static std::string Theme = "ember";
 static double Scale = 1.;
 static constexpr auto SettingsPath = L"Data/SKSE/Plugins/NPCStudio/settings.json";
 
