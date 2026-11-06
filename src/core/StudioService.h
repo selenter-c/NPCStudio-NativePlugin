@@ -5,6 +5,7 @@
 #include <atomic>
 #include <thread>
 #include <map>
+#include <optional>
 
 namespace NPCStudio {
 class StudioService {
@@ -43,6 +44,16 @@ private:
     std::map<RE::FormID, ExternalLook> externalLooks;
     RE::ObjectRefHandle appearanceTarget;
     Appearance::Draft hairDraft;
+    struct LookFrame {
+        RE::ObjectRefHandle target;
+        RE::BGSHeadPart* hair;
+        std::string identity;
+        nlohmann::json options;
+        std::chrono::steady_clock::time_point earliest;
+        unsigned attempts = 0;
+    };
+    std::optional<LookFrame> lookFrame;
+    bool lookClassicPose = false;
     std::atomic<bool> externalWork = false;
     struct RestoreJob { std::string identity; std::string preset; unsigned attempts = 0; unsigned stage = 0; bool raceRequested = false; bool appearanceRestored = false; };
     std::map<unsigned, RestoreJob> restoring;
@@ -59,6 +70,8 @@ private:
     void RestoreNames();
     void Delete(Slot& slot);
     void QueueRestore(Slot& slot, const std::string& preset = "");
+    nlohmann::json QueueLookFrame(RE::Actor* actor, RE::BGSHeadPart* hair, const std::string& identity, const nlohmann::json& options);
+    nlohmann::json RenderLookFrame(RE::Actor* actor, const std::string& identity, nlohmann::json options);
     std::jthread worker;
 };
 }

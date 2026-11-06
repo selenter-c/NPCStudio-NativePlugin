@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(NPCStudio VERSION 0.8.3 LANGUAGES CXX)
+project(NPCStudio VERSION 0.8.4 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

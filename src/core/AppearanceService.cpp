@@ -40,7 +40,31 @@ static bool Ready(RE::Actor* actor, bool managed) {
 }
 
 static bool HasMesh(RE::Actor* actor, const Head* part) {
-    return part && !part->formEditorID.empty() && actor->GetFaceNode()->GetObjectByName(part->formEditorID);
+    const auto* name = part ? part->formEditorID.c_str() : nullptr;
+    auto* face = actor->GetFaceNode();
+    return name && *name && face && face->GetObjectByName(part->formEditorID);
+}
+
+Head* VisualHair(RE::Actor* actor, const json& saved) {
+    if (auto* hair = SavedHair(saved); HasMesh(actor, hair)) return hair;
+    return BaseHair(actor);
+}
+
+bool HairAwaitingBones(RE::Actor* actor, Head* hair) {
+    auto* face = actor->GetFaceNode();
+    if (!face || !hair) return false;
+    const auto unbound = [&](Head* part) {
+        if (!part || part->formEditorID.empty()) return false;
+        auto* node = face->GetObjectByName(part->formEditorID);
+        if (!node) return false;
+        return RE::BSVisit::TraverseScenegraphGeometries(node, [](RE::BSGeometry* shape) {
+            const auto& data = shape->GetGeometryRuntimeData();
+            const bool waiting = data.skinInstance ? !data.skinInstance->bones :
+                shape->AsDynamicTriShape() || data.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_SKINNED);
+            return waiting ? RE::BSVisit::BSVisitControl::kStop : RE::BSVisit::BSVisitControl::kContinue;
+        }) == RE::BSVisit::BSVisitControl::kStop;
+    };
+    return unbound(hair) || std::ranges::any_of(hair->extraParts, unbound);
 }
 
 static bool Compatible(RE::Actor* actor, Head* part) {
@@ -182,7 +206,7 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     return result;
 }
 
-void TryOn(RE::Actor* actor, bool managed, const json& saved, const json& command, Draft& draft) {
+bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& command, Draft& draft) {
     if (!Ready(actor, managed)) throw std::runtime_error("Внешность этого NPC сейчас недоступна");
     if (!draft.target) {
         auto* current = BaseHair(actor);
@@ -202,7 +226,8 @@ void TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
         throw std::runtime_error("Исходный цвет волос недоступен");
     if (!HasMesh(actor, draft.hair) && HasMesh(actor, draft.originalHair)) draft.hair = draft.originalHair;
     if (!HasMesh(actor, draft.hair)) throw std::runtime_error("Снимите головной убор и дождитесь загрузки волос");
-    if (hair != draft.hair) {
+    const bool changedHair = hair != draft.hair;
+    if (changedHair) {
         auto* previous = draft.hair;
         draft.hair = hair;
         actor->ChangeHeadPart(previous, hair);
@@ -210,6 +235,7 @@ void TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
     }
     draft.color = color;
     Tint(actor, color);
+    return changedHair;
 }
 
 json Commit(RE::Actor* actor, bool managed, const json& saved, Draft& draft) {

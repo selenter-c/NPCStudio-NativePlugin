@@ -212,6 +212,11 @@ bool IsCurrent(std::uint64_t generation) {
     std::lock_guard lock(Guard);
     return generation == Generation;
 }
+void PublishFrameError(const std::string& identity, const std::string& error) {
+    std::uint64_t generation;
+    { std::lock_guard lock(Guard); generation = Generation; }
+    UI::PublishPreview({{"identity", identity}, {"kind", "actor"}, {"generation", generation}, {"error", error}});
+}
 void Clear() {
     P::Id thumbnail = 0;
     {
@@ -263,7 +268,8 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
         if (item) Check(Api->OpenItem(Client, "item", form, 512, 512, &view), "OpenItem");
         else Check(Api->OpenActor(Client, "actor", form, 480, 640, 0, &view), "OpenActor");
         if (!item) {
-            Check(Api->SetHint(view, "pose", "captured"), "SetHint pose");
+            const auto classic = options.value("classicPose", false);
+            Check(Api->SetHint(view, "pose", classic ? "classic" : "captured"), "SetHint pose");
             Check(Api->SetHint(view, "weapons", "on"), "SetHint weapons");
             // Замораживаем скопированную позу: граф может содержать боевой цикл под обычным idle.
             Check(Api->SetHint(view, "motion", "false"), "SetHint motion");
@@ -362,11 +368,16 @@ void CancelHairThumbnail(unsigned token) {
     }
     Clear();
 }
+static std::filesystem::path HairThumbnailPath(std::uint64_t fingerprint) {
+    return std::filesystem::path("Data/SKSE/Plugins/NPCStudio/HairThumbnails/v1") / fmt::format("{:016X}.image", fingerprint);
+}
+std::string ReadHairThumbnail(std::uint64_t fingerprint) {
+    return ReadImage(HairThumbnailPath(fingerprint), 150000);
+}
 json HairThumbnail(RE::BGSHeadPart* part, unsigned token, std::uint64_t fingerprint) {
     if (!part || !token) throw std::runtime_error("Модель причёски недоступна");
     const auto identity = fmt::format("hair-{:08X}", part->GetFormID());
-    const auto cache = std::filesystem::path("Data/SKSE/Plugins/NPCStudio/HairThumbnails/v1") /
-        fmt::format("{:016X}.image", fingerprint);
+    const auto cache = HairThumbnailPath(fingerprint);
     if (auto image = ReadImage(cache, 150000); !image.empty())
         return {{"kind", "hairThumbnail"}, {"identity", identity}, {"token", token}, {"image", std::move(image)}};
     Initialize();
