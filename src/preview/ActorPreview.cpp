@@ -38,6 +38,7 @@ struct PortraitRequest {
     bool crop = false;
     unsigned thumbnailToken = 0;
     P::Id thumbnailRequest = 0;
+    std::filesystem::path thumbnailCache;
 };
 static std::unordered_map<std::uintptr_t, PortraitRequest> Portraits;
 static std::uintptr_t NextPortrait = 0;
@@ -46,13 +47,22 @@ static std::filesystem::path PortraitPath(const std::string& identity) {
         throw std::runtime_error("Invalid portrait identity");
     return std::filesystem::path("Data/SKSE/Plugins/NPCStudio/Portraits") / (identity + ".image");
 }
-void SavePortrait(const std::string& identity, const std::string& image) {
-    if (!image.starts_with("data:image/png;base64,") || image.size() > 2000000) throw std::runtime_error("Invalid portrait image");
-    const auto path = PortraitPath(identity);
+static void StoreImage(const std::filesystem::path& path, const std::string& image, DWORD flags = MOVEFILE_REPLACE_EXISTING) {
     std::filesystem::create_directories(path.parent_path());
     const auto temp = std::filesystem::path(path.wstring() + L".tmp");
     { std::ofstream file(temp, std::ios::binary); file << image; file.flush(); if (!file) throw std::runtime_error("Cannot save portrait"); }
-    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw std::runtime_error("Cannot replace portrait");
+    if (!MoveFileExW(temp.c_str(), path.c_str(), flags)) throw std::runtime_error("Cannot replace image");
+}
+void SavePortrait(const std::string& identity, const std::string& image) {
+    if (!image.starts_with("data:image/png;base64,") || image.size() > 2000000) throw std::runtime_error("Invalid portrait image");
+    StoreImage(PortraitPath(identity), image, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+static std::string ReadImage(const std::filesystem::path& path, std::uintmax_t maxSize) {
+    std::error_code error;
+    if (std::filesystem::file_size(path, error) >= maxSize || error) return {};
+    std::ifstream file(path, std::ios::binary);
+    std::string image((std::istreambuf_iterator<char>(file)), {});
+    return image.starts_with("data:image/png;base64,") ? image : std::string{};
 }
 static json Describe(const LiveState& state) {
     return {{"identity", state.identity}, {"kind", state.kind}, {"image", state.image},
@@ -157,7 +167,11 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
         if (!png) throw std::runtime_error("Cannot encode portrait PNG");
         std::unique_ptr<unsigned char, decltype(&free)> owned(png, &free);
         auto image = Base64(png, static_cast<std::size_t>(size));
-        if (request.thumbnailToken) publish({{"image", std::move(image)}});
+        if (request.thumbnailToken) {
+            try { StoreImage(request.thumbnailCache, image); }
+            catch (const std::exception& e) { logger::warn("Кэш миниатюры причёски: {}", e.what()); }
+            publish({{"image", std::move(image)}});
+        }
         else {
             SavePortrait(request.identity, image);
             logger::info("Портрет сохранён: {}, {} bytes", request.identity, image.size());
@@ -280,11 +294,7 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     return Describe(Live);
 }
 std::string ReadPortrait(const std::string& identity) {
-    const auto path = PortraitPath(identity);
-    if (!std::filesystem::exists(path) || std::filesystem::file_size(path) >= 2000000) return {};
-    std::ifstream file(path, std::ios::binary);
-    std::string image((std::istreambuf_iterator<char>(file)), {});
-    return image.starts_with("data:image/png;base64,") ? image : std::string();
+    return ReadImage(PortraitPath(identity), 2000000);
 }
 json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
     if (!actor || actor->IsDisabled() || actor->IsDead() || !actor->Is3DLoaded())
@@ -345,13 +355,24 @@ json ItemFrame(RE::TESBoundObject* item, const json& options) {
     if (!item || !item->Is(RE::FormType::Armor, RE::FormType::Weapon, RE::FormType::Ammo)) throw std::runtime_error("Unsupported preview item");
     return LiveFrame(item->GetFormID(), fmt::format("item-{:08X}", item->GetFormID()), options, true);
 }
-json HairThumbnail(RE::BGSHeadPart* part, unsigned token) {
+void CancelHairThumbnail(unsigned token) {
+    {
+        std::lock_guard lock(Guard);
+        if (!token || Portraits.empty() || Portraits.begin()->second.thumbnailToken != token) return;
+    }
+    Clear();
+}
+json HairThumbnail(RE::BGSHeadPart* part, unsigned token, std::uint64_t fingerprint) {
     if (!part || !token) throw std::runtime_error("Модель причёски недоступна");
+    const auto identity = fmt::format("hair-{:08X}", part->GetFormID());
+    const auto cache = std::filesystem::path("Data/SKSE/Plugins/NPCStudio/HairThumbnails/v1") /
+        fmt::format("{:016X}.image", fingerprint);
+    if (auto image = ReadImage(cache, 150000); !image.empty())
+        return {{"kind", "hairThumbnail"}, {"identity", identity}, {"token", token}, {"image", std::move(image)}};
     Initialize();
     static unsigned proxyIndex = 0;
     auto* proxy = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESObjectMISC>(0x802 + (proxyIndex % 2), "NPCStudio.esp");
     if (!proxy) throw std::runtime_error("Обновите NPCStudio.esp для миниатюр");
-    const auto identity = fmt::format("hair-{:08X}", part->GetFormID());
     std::uintptr_t ticket;
     P::Id closeView;
     {
@@ -361,6 +382,7 @@ json HairThumbnail(RE::BGSHeadPart* part, unsigned token) {
         Live = {};
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation, 0, 0, 1, false, token});
+        Portraits.at(ticket).thumbnailCache = cache;
     }
     ++proxyIndex;
     if (closeView) Api->CloseView(closeView);
@@ -369,7 +391,7 @@ json HairThumbnail(RE::BGSHeadPart* part, unsigned token) {
     if (path.starts_with("meshes\\") || path.starts_with("Meshes\\")) path.remove_prefix(7);
     proxy->SetModel(std::string(path).c_str());
     P::Id request = 0;
-    const auto result = Api->RequestItemStill(Client, proxy->GetFormID(), 144, 144, "turn=180", OnStill, reinterpret_cast<void*>(ticket), &request);
+    const auto result = Api->RequestItemStill(Client, proxy->GetFormID(), 128, 128, "turn=180", OnStill, reinterpret_cast<void*>(ticket), &request);
     if (result != 0) {
         std::lock_guard lock(Guard);
         Portraits.erase(ticket);

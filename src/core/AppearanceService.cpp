@@ -54,31 +54,32 @@ static bool Compatible(RE::Actor* actor, Head* part) {
 }
 
 enum class MeshKind { Invalid, Static, Physics };
+struct MeshInfo { MeshKind kind = MeshKind::Invalid; std::uint64_t fingerprint = 0; };
 
-static MeshKind InspectMesh(std::string path) {
+static MeshInfo InspectMesh(std::string path) {
     std::ranges::transform(path, path.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     std::ranges::replace(path, '/', '\\');
     if (path.empty() || path.starts_with('\\') || path.contains(':') || path.contains("..") || !path.ends_with(".nif"))
-        return MeshKind::Invalid;
+        return {};
     if (!path.starts_with("meshes\\")) path.insert(0, "meshes\\");
-    static std::unordered_map<std::string, MeshKind> cache;
+    static std::unordered_map<std::string, MeshInfo> cache;
     if (auto it = cache.find(path); it != cache.end()) return it->second;
     RE::BSResourceNiBinaryStream stream(path);
-    if (!stream.good()) return MeshKind::Invalid;
+    if (!stream.good()) return {};
     const auto size = stream.stream->totalSize;
-    if (size < 32 || size > 16 * 1024 * 1024) return MeshKind::Invalid;
+    if (size < 32 || size > 16 * 1024 * 1024) return {};
     std::string data(size, '\0');
     if (!stream.read(data.data(), size) || !data.starts_with("Gamebryo File Format"))
-        return MeshKind::Invalid;
+        return {};
     const auto kind = data.contains("HDT Skinned Mesh Physics Object") ? MeshKind::Physics : MeshKind::Static;
-    cache.emplace(std::move(path), kind);
-    return kind;
+    const auto hash = std::hash<std::string>{}(data) ^ std::hash<std::string>{}(path);
+    return cache.emplace(std::move(path), MeshInfo{kind, hash}).first->second;
 }
 
 static bool SafeMeshes(Head* part) {
     const auto valid = [](Head* element) {
         if (!element || element->IsDeleted() || !element->GetModel()) return false;
-        const auto kind = InspectMesh(element->GetModel());
+        const auto kind = InspectMesh(element->GetModel()).kind;
         return kind == MeshKind::Static || (kind == MeshKind::Physics && GetModuleHandleW(L"hdtSMP64.dll"));
     };
     return valid(part) && std::ranges::all_of(part->extraParts, [&](Head* extra) {
@@ -86,11 +87,15 @@ static bool SafeMeshes(Head* part) {
     });
 }
 
-RE::BGSHeadPart* ThumbnailPart(RE::Actor* actor, RE::FormID id) {
+std::pair<RE::BGSHeadPart*, std::uint64_t> ThumbnailPart(RE::Actor* actor, RE::FormID id) {
     auto* part = RE::TESForm::LookupByID<Head>(id);
-    if (!actor || !actor->GetActorBase() || !Compatible(actor, part) || !SafeMeshes(part))
+    if (!actor || !actor->GetActorBase() || !Compatible(actor, part))
         throw std::runtime_error("Модель причёски недоступна");
-    return part;
+    // Снимок использует основной NIF. Дополнительные части проверяются при примерке.
+    const auto mesh = InspectMesh(part->GetModel());
+    if (mesh.kind == MeshKind::Invalid || (mesh.kind == MeshKind::Physics && !GetModuleHandleW(L"hdtSMP64.dll")))
+        throw std::runtime_error("Модель причёски недоступна");
+    return {part, mesh.fingerprint};
 }
 bool CanRestoreHair(RE::Actor* actor, Head* part) {
     return Compatible(actor, part) && SafeMeshes(part);

@@ -91,7 +91,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.1"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.2"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -140,6 +140,10 @@ json StudioService::Execute(const json& command) {
         return {{"partial", true}, {"portraits", images}};
     }
     if (action == "previewStop") { Preview::Clear(); CancelAppearance(); return {{"partial", true}}; }
+    if (action == "hairThumbnailCancel") {
+        Preview::CancelHairThumbnail(command.at("token").get<unsigned>());
+        return {{"partial", true}};
+    }
     if (action == "saveSettings") { UI::SaveSettings(command.at("settings")); return Snapshot(); }
     if (action == "addCategory") { Equipment::AddCategory(command.at("name").get<std::string>()); return Snapshot(); }
     if (!ready || !stateValid) throw std::runtime_error(error.empty() ? "Пул недоступен" : error);
@@ -173,8 +177,8 @@ json StudioService::Execute(const json& command) {
                 it->second.base == actor->GetActorBase()->GetFormID()) saved = it->second.look;
         }
         if (action == "hairThumbnail") {
-            auto* part = Appearance::ThumbnailPart(actor, command.at("hair").get<RE::FormID>());
-            return {{"partial", true}, {"hairThumbnail", Preview::HairThumbnail(part, command.at("token").get<unsigned>())}};
+            const auto [part, fingerprint] = Appearance::ThumbnailPart(actor, command.at("hair").get<RE::FormID>());
+            return {{"partial", true}, {"hairThumbnail", Preview::HairThumbnail(part, command.at("token").get<unsigned>(), fingerprint)}};
         }
         const auto previewIdentity = fmt::format("look-{:08X}", actor->GetFormID());
         if (action == "appearanceFrame") {
