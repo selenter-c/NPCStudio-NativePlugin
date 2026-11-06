@@ -86,7 +86,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.7.2"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.7.3"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", false}, {"biography", false}}}};
 }
@@ -225,16 +225,18 @@ json StudioService::Execute(const json& command) {
                 throw std::runtime_error("Некорректное имя");
             Names::Apply(slot.base, slot.actor, name);
             assignments[key]["name"] = name;
-        } else if (action == "equipment" || action == "giveItem" || action == "unequipItem" ||
+        } else if (action == "equipment" || action == "giveItem" || action == "equipItem" || action == "unequipItem" || action == "removeItem" ||
             action == "applyEquipmentPreset") {
             if (restoring.contains(slot.id)) throw std::runtime_error("Снаряжение ещё восстанавливается");
-            Equipment::Execute(slot.actor, command);
-            if (action == "giveItem" || action == "unequipItem" || action == "applyEquipmentPreset") {
+            if (action != "equipment") {
                 settlingTicks = 3;
                 workPending = true;
                 UI::SetWorldWork(true);
+                Equipment::Execute(slot.actor, command);
+                assignments[key]["loadout"] = Equipment::Capture(slot.actor);
+                assignments[key].erase("audit");
+                assignments[key].erase("warning");
             }
-            if (action != "equipment") assignments[key]["loadout"] = Equipment::Capture(slot.actor);
             auto state = Snapshot();
             state["equipment"] = Equipment::Describe(slot.actor, command);
             state["equipmentOwnerId"] = slot.id;

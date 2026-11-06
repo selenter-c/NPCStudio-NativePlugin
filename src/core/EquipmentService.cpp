@@ -181,7 +181,11 @@ json Describe(RE::Actor* actor, const json& command) {
     json inventory = json::array(), presets = json::array(), catalog = json::array();
     if (actor) for (auto& [object, entry] : actor->GetInventory()) {
         if (!Supported(object) || entry.first <= 0) continue;
-        try { inventory.push_back(ItemInfo(object, entry.first, entry.second && entry.second->IsWorn())); }
+        try {
+            auto item = ItemInfo(object, entry.first, entry.second && entry.second->IsWorn());
+            item["removable"] = !entry.second || !entry.second->IsQuestObject();
+            inventory.push_back(std::move(item));
+        }
         catch (const std::exception&) { /* Динамические предметы не входят в переносимые наборы. */ }
     }
     presets = Library().at("presets");
@@ -218,6 +222,38 @@ static void GiveAndEquip(RE::Actor* actor, RE::TESBoundObject* object, unsigned 
     if (existing < static_cast<int>(count)) actor->AddObjectToContainer(object, nullptr, static_cast<int>(count) - existing, nullptr);
     // Без forceEquip: предмет впоследствии можно снять обычными средствами.
     RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, nullptr, object->Is(RE::FormType::Ammo) ? count : 1, nullptr, false, false, false, true);
+}
+
+static RE::BGSEquipSlot* LeftHandSlot() {
+    for (auto* slot : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::BGSEquipSlot>())
+        if (slot && slot->GetFormEditorID() && std::string_view(slot->GetFormEditorID()) == "LeftHand") return slot;
+    return nullptr;
+}
+
+static auto FindInventoryItem(RE::Actor* actor, RE::TESBoundObject* object) {
+    return actor->GetInventory([object](RE::TESBoundObject& candidate) { return &candidate == object; });
+}
+
+static void Unequip(RE::Actor* actor, RE::TESBoundObject* object) {
+    // После снятия предмета движок может заменить списки ExtraData. Для второй руки читаем их заново.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto inventory = FindInventoryItem(actor, object);
+        const auto found = inventory.find(object);
+        if (found == inventory.end() || !found->second.second || !found->second.second->IsWorn()) return;
+        for (auto* extra : *found->second.second->extraLists) {
+            if (!extra) continue;
+            const bool left = extra->HasType<RE::ExtraWornLeft>();
+            if (!left && !extra->HasType<RE::ExtraWorn>()) continue;
+            auto* hand = left && object->Is(RE::FormType::Weapon) ? LeftHandSlot() : nullptr;
+            const auto count = object->Is(RE::FormType::Ammo) ? std::max(1, found->second.first) : 1;
+            RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, object, extra, count, hand, false, false, false, true);
+            break;
+        }
+    }
+    const auto inventory = FindInventoryItem(actor, object);
+    const auto found = inventory.find(object);
+    if (found != inventory.end() && found->second.second && found->second.second->IsWorn())
+        throw std::runtime_error("Не удалось снять предмет");
 }
 
 json Capture(RE::Actor* actor) {
@@ -259,10 +295,7 @@ json Restore(RE::Actor* actor, const json& saved) {
             for (auto* candidate : *found->second.second->extraLists) if (candidate) { extra = candidate; break; }
         }
         RE::BGSEquipSlot* hand = nullptr;
-        if (object->Is(RE::FormType::Weapon) && item.value("left", false)) {
-            for (auto* slot : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::BGSEquipSlot>())
-                if (slot && slot->GetFormEditorID() && std::string_view(slot->GetFormEditorID()) == "LeftHand") { hand = slot; break; }
-        }
+        if (object->Is(RE::FormType::Weapon) && item.value("left", false)) hand = LeftHandSlot();
         const unsigned count = object->Is(RE::FormType::Ammo) ? static_cast<unsigned>(std::min(found->second.first, item.at("count").get<int>())) : 1;
         RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, extra, count, hand, false, false, false, true);
     }
@@ -285,16 +318,26 @@ void Execute(RE::Actor* actor, const json& command) {
         auto* object = Resolve(command.at("item"));
         const unsigned count = command.value("count", 1u);
         if (!count || count > 1000) throw std::runtime_error("Количество должно быть от 1 до 1000");
-        GiveAndEquip(actor, object, object->Is(RE::FormType::Ammo) ? count : 1);
-    } else if (action == "unequipItem") {
+        GiveAndEquip(actor, object, count);
+    } else if (action == "equipItem" || action == "unequipItem" || action == "removeItem") {
         auto* object = Resolve(command.at("item"));
-        auto inventory = actor->GetInventory();
+        const auto inventory = FindInventoryItem(actor, object);
         auto it = inventory.find(object);
-        if (it == inventory.end() || it->second.first <= 0 || !it->second.second) throw std::runtime_error("Предмета уже нет у NPC");
-        auto* extras = it->second.second->extraLists;
-        if (extras) for (auto* extra : *extras) {
-            if (extra && (extra->HasType<RE::ExtraWorn>() || extra->HasType<RE::ExtraWornLeft>()))
-                RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, object, extra, 1, nullptr, false, false, false, true);
+        if (it == inventory.end() || it->second.first <= 0) throw std::runtime_error("Предмета уже нет у NPC");
+        if (action == "equipItem") {
+            const auto count = object->Is(RE::FormType::Ammo) ? it->second.first : 1;
+            RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, nullptr, count, nullptr, false, false, false, true);
+        } else if (action == "unequipItem") {
+            Unequip(actor, object);
+        } else {
+            const auto count = it->second.first;
+            if (count != command.at("count").get<int>()) throw std::runtime_error("Количество изменилось. Обновите инвентарь");
+            if (it->second.second && it->second.second->IsQuestObject()) throw std::runtime_error("Квестовый предмет нельзя удалить");
+            Unequip(actor, object);
+            actor->RemoveItem(object, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+            const auto after = FindInventoryItem(actor, object);
+            const auto remaining = after.find(object);
+            if (remaining != after.end() && remaining->second.first > 0) throw std::runtime_error("Не удалось удалить все экземпляры предмета");
         }
     } else if (action == "applyEquipmentPreset") {
         const auto presets = ReadPresets();
@@ -309,14 +352,10 @@ void Execute(RE::Actor* actor, const json& command) {
             if (!count || count > 1000 || !seen.insert(object).second) throw std::runtime_error("Неверное количество или повтор предмета в наборе");
             items.emplace_back(object, count);
         }
-        for (auto& [object, entry] : actor->GetInventory()) {
-            if (!Supported(object) || entry.first <= 0 || !entry.second || !entry.second->IsWorn()) continue;
-            auto* extras = entry.second->extraLists;
-            if (extras) for (auto* extra : *extras) {
-                if (extra && (extra->HasType<RE::ExtraWorn>() || extra->HasType<RE::ExtraWornLeft>()))
-                    RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, object, extra, 1, nullptr, false, false, false, true);
-            }
-        }
+        std::vector<RE::TESBoundObject*> worn;
+        for (const auto& [object, entry] : actor->GetInventory())
+            if (Supported(object) && entry.first > 0 && entry.second && entry.second->IsWorn()) worn.push_back(object);
+        for (auto* object : worn) Unequip(actor, object);
         for (auto [object, count] : items) GiveAndEquip(actor, object, count);
         logger::info("Набор '{}' применён к {:08X}", found->first, actor->GetFormID());
     } else throw std::runtime_error("Неизвестная команда снаряжения");
