@@ -10,6 +10,8 @@ struct Draft {
     RE::BGSColorForm* color = nullptr;
 };
 nlohmann::json Describe(RE::Actor* actor, bool managed, const nlohmann::json& saved);
+nlohmann::json Height(RE::Actor* actor);
+void SetHeight(RE::Actor* actor, bool managed, const nlohmann::json& percent);
 bool TryOn(RE::Actor* actor, bool managed, const nlohmann::json& saved, const nlohmann::json& command, Draft& draft);
 nlohmann::json Commit(RE::Actor* actor, bool managed, const nlohmann::json& saved, Draft& draft);
 void Cancel(Draft& draft);

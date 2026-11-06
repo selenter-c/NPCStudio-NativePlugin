@@ -1,10 +1,13 @@
 #include "core/AppearanceService.h"
+#include <cmath>
 #include <unordered_map>
 
 namespace NPCStudio::Appearance {
 using json = nlohmann::json;
 using Head = RE::BGSHeadPart;
 using Color = RE::BGSColorForm;
+constexpr int MinHeightPercent = 75;
+constexpr int MaxHeightPercent = 125;
 
 static json Address(const RE::TESForm* form) {
     const auto* file = form ? form->GetFile(0) : nullptr;
@@ -31,12 +34,29 @@ static Head* BaseHair(RE::Actor* actor) {
     return base->HasOverlays() ? nullptr : base->GetHeadPartByType(Head::HeadPartType::kHair);
 }
 
+json Height(RE::Actor* actor) {
+    return {{"percent", actor->GetReferenceRuntimeData().refScale}, {"min", MinHeightPercent}, {"max", MaxHeightPercent}};
+}
+
 static bool Ready(RE::Actor* actor, bool managed) {
     if (!actor || actor->IsPlayerRef() || actor->IsDisabled() || actor->IsDead() || actor->IsInCombat() ||
         !actor->Is3DLoaded() || !actor->GetFaceNode()) return false;
     const auto* base = actor->GetActorBase();
     return base && (managed || (base->IsUnique() && actor->GetFile(0) && (actor->GetFormID() >> 24) != 0xFF)) &&
         Face(actor) && BaseHair(actor);
+}
+
+void SetHeight(RE::Actor* actor, bool managed, const json& percent) {
+    if (!Ready(actor, managed)) throw std::runtime_error("Внешность этого NPC сейчас недоступна");
+    if (!percent.is_number_integer() || percent < MinHeightPercent || percent > MaxHeightPercent)
+        throw std::runtime_error("Рост должен быть от 75 до 125%");
+    const auto value = percent.get<int>();
+    if (actor->GetReferenceRuntimeData().refScale == value) return;
+    // Убираем погрешность float перед преобразованием движка в целые сотые.
+    actor->SetScale(std::nextafter(value / 100.f, 2.f));
+    actor->AddChange(RE::TESObjectREFR::ChangeFlags::kScale);
+    if (actor->GetReferenceRuntimeData().refScale != value)
+        throw std::runtime_error("Движок не подтвердил изменение роста");
 }
 
 static bool HasMesh(RE::Actor* actor, const Head* part) {
@@ -166,6 +186,7 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     const auto* name = actor->GetDisplayFullName();
     json result = {{"name", name ? name : ""}, {"managed", managed}, {"available", Ready(actor, managed)}};
     if (!result["available"].get<bool>()) return result;
+    result["height"] = Height(actor);
     auto* hair = BaseHair(actor);
     if (!managed) {
         auto* current = Resolve<Head>(saved.value("hair", json(nullptr)));

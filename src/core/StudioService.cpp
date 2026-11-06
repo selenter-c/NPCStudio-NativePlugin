@@ -91,7 +91,7 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.4"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.5"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -167,7 +167,7 @@ json StudioService::Execute(const json& command) {
     if (action == "editPreset") { Equipment::SaveEditedPreset(command); return Snapshot(); }
     if (action == "presetCatalog") return {{"partial",true},{"catalog",Equipment::Describe(nullptr, command).at("catalog")}};
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (action == "appearance" || action == "applyAppearance" || action == "tryAppearance" ||
+    if (action == "appearance" || action == "applyAppearance" || action == "tryAppearance" || action == "setHeight" ||
         action == "appearanceFrame" || action == "hairThumbnail" || action == "hairThumbnailCache") {
         const bool managed = command.contains("id");
         RE::Actor* actor = nullptr;
@@ -190,6 +190,14 @@ json StudioService::Execute(const json& command) {
                 throw std::runtime_error("NPC под прицелом больше недоступен");
             if (auto it = externalLooks.find(actor->GetFormID()); it != externalLooks.end() &&
                 it->second.base == actor->GetActorBase()->GetFormID()) saved = it->second.look;
+        }
+        if (action == "setHeight") {
+            Preview::Clear();
+            Appearance::SetHeight(actor, managed, command.at("percent"));
+            settlingTicks = 3;
+            workPending = true;
+            UI::SetWorldWork(true);
+            return {{"partial", true}, {"height", Appearance::Height(actor)}};
         }
         if (action == "hairThumbnailCache") {
             const auto& ids = command.at("hairs");
@@ -401,6 +409,10 @@ void StudioService::Delete(Slot& slot) {
         slot.actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, value, -damage);
     }
     slot.actor->Disable();
+    if (slot.actor->GetReferenceRuntimeData().refScale != 100) {
+        slot.actor->SetScale(1.f);
+        slot.actor->AddChange(RE::TESObjectREFR::ChangeFlags::kScale);
+    }
     slot.actor->MoveTo(holdingAnchor);
     Names::Apply(slot.base, slot.actor, slot.defaultName);
     const auto oldName = assignments.at(std::to_string(slot.id)).at("name").get<std::string>();
