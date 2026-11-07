@@ -4,7 +4,7 @@ The C++ SKSE plugin behind [NPC Studio](https://github.com/selenter-c/NPCStudio-
 
 NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) playthroughs. It provides blank, persistent NPCs with editable identities, appearances, and equipment. They generally stand idle until an AI framework gives them actions or dialogue. Automatic SkyrimNet registration and biography generation are outside the 0.8.7 beta.
 
-[**Download and install the beta**](https://github.com/selenter-c/NPCStudio-GamePlugin/releases/tag/v0.8.7-beta) · [Build instructions](https://github.com/selenter-c/NPCStudio-Build)
+[**Download and install the beta**](https://github.com/selenter-c/NPCStudio-GamePlugin/releases) · [Build instructions](https://github.com/selenter-c/NPCStudio-Build)
 
 ## What the plugin handles
 
