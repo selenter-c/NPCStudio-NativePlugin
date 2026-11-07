@@ -11,17 +11,17 @@ NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNe
 - Permanent reference assignment and restoration for 400 reserved NPC slots.
 - Runtime editing for owned characters and supported world NPCs, with SKSE co-save persistence.
 - Equipment presets, inventory operations, and optional NPCs Names Distributor integration.
-- A Magelight v4 bridge for the editor and a pinned Phantasm adapter for 3D previews and portraits.
+- A Magelight v4 bridge for the editor and native integration for 3D previews and portraits.
 
 ## Build and runtime
 
 The native target uses C++23, MSVC, CMake, Ninja, and vcpkg. It pins [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/8eaddedd1542290701ccb0e9e88b2af8b3cea597) and builds against the Skyrim AE runtime. Use the [Build repository](https://github.com/selenter-c/NPCStudio-Build) for the complete toolchain and packaging commands.
 
-The installed mod requires [SKSE64 2.2.6](https://skse.silverlock.org/), [AE Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444), and [Magelight UI](https://www.nexusmods.com/skyrimspecialedition/mods/193303) with its v4 API. Preview features use [Phantasm 0.3.0 from SeverActions 4.7.0](https://github.com/Severause/SeverActions/releases/tag/v4.7.0). See the [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) for optional dependencies.
+The installed mod requires [SKSE64 2.2.6](https://skse.silverlock.org/), [AE Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444), and [Magelight UI](https://www.nexusmods.com/skyrimspecialedition/mods/193303) with its v4 API. See the [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) for optional dependencies.
 
 ## Credits and licensing
 
-[Build a Follower](https://www.nexusmods.com/skyrimspecialedition/mods/185471) informed the permanent slot model. [RaceMenu](https://www.nexusmods.com/skyrimspecialedition/mods/19080) and [NPC Preset Applier](https://www.nexusmods.com/skyrimspecialedition/mods/193575) informed appearance editing. [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) and [IntelEngine](https://github.com/galanx/IntelEngine-NativePlugin) provided integration references. [SeverActions](https://github.com/Severause/SeverActions), Phantasm, and Magelight UI are by Severause.
+[Build a Follower](https://www.nexusmods.com/skyrimspecialedition/mods/185471) informed the permanent slot model. [RaceMenu](https://www.nexusmods.com/skyrimspecialedition/mods/19080) and [NPC Preset Applier](https://www.nexusmods.com/skyrimspecialedition/mods/193575) informed appearance editing. [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) and [IntelEngine](https://github.com/galanx/IntelEngine-NativePlugin) provided integration references. [SeverActions](https://github.com/Severause/SeverActions) and Magelight UI are by Severause.
 
 Developed with **OpenAI Codex**, which helped solve technical problems in the SKSE, rendering, save-state, and UI implementations.
 
