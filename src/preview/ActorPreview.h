@@ -6,7 +6,6 @@ nlohmann::json Frame(RE::Actor* actor, const std::string& identity, const nlohma
 nlohmann::json ItemFrame(RE::TESBoundObject* item, const nlohmann::json& options);
 nlohmann::json HairThumbnail(RE::BGSHeadPart* part, unsigned token, std::uint64_t fingerprint);
 std::string ReadHairThumbnail(std::uint64_t fingerprint);
-void PublishFrameError(const std::string& identity, const std::string& error);
 void CancelHairThumbnail(unsigned token);
 bool IsCurrent(std::uint64_t generation);
 void Clear();

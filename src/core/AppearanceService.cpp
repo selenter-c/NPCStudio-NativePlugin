@@ -73,28 +73,6 @@ static bool HasMesh(RE::Actor* actor, const Head* part) {
     return name && *name && face && face->GetObjectByName(part->formEditorID);
 }
 
-Head* VisualHair(RE::Actor* actor, const json& saved) {
-    if (auto* hair = SavedHair(saved); HasMesh(actor, hair)) return hair;
-    return BaseHair(actor);
-}
-
-bool HairAwaitingBones(RE::Actor* actor, Head* hair) {
-    auto* face = actor->GetFaceNode();
-    if (!face || !hair) return false;
-    const auto unbound = [&](Head* part) {
-        if (!part || part->formEditorID.empty()) return false;
-        auto* node = face->GetObjectByName(part->formEditorID);
-        if (!node) return false;
-        return RE::BSVisit::TraverseScenegraphGeometries(node, [](RE::BSGeometry* shape) {
-            const auto& data = shape->GetGeometryRuntimeData();
-            const bool waiting = data.skinInstance ? !data.skinInstance->bones :
-                shape->AsDynamicTriShape() || data.vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_SKINNED);
-            return waiting ? RE::BSVisit::BSVisitControl::kStop : RE::BSVisit::BSVisitControl::kContinue;
-        }) == RE::BSVisit::BSVisitControl::kStop;
-    };
-    return unbound(hair) || std::ranges::any_of(hair->extraParts, unbound);
-}
-
 static bool BlankBeard(const Head* part) {
     return part && part->type == PartType::kFacialHair && (!part->GetModel() || !*part->GetModel()) && part->extraParts.empty();
 }
@@ -396,7 +374,7 @@ json Describe(RE::Actor* actor, bool managed, const json& saved) {
     return result;
 }
 
-bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& command, Draft& draft) {
+void TryOn(RE::Actor* actor, bool managed, const json& saved, const json& command, Draft& draft) {
     if (!Ready(actor, managed)) throw std::runtime_error("Внешность этого NPC сейчас недоступна");
     if (!draft.target) {
         auto* current = BaseHair(actor);
@@ -458,7 +436,6 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
             throw std::runtime_error("Движок не подтвердил замену волос");
         }
     }
-    bool changedFace = false;
     for (std::size_t i = 0; i < parts.size(); ++i) {
         auto& part = draft.faceParts[i];
         auto* previous = part.current;
@@ -468,7 +445,6 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
             Cancel(draft);
             throw std::runtime_error("Движок не подтвердил замену детали лица");
         }
-        changedFace = true;
     }
     draft.color = color;
     Tint(actor, color);
@@ -479,7 +455,6 @@ bool TryOn(RE::Actor* actor, bool managed, const json& saved, const json& comman
         }
         draft.skin = skin;
     }
-    return changedHair || changedFace;
 }
 
 json Commit(RE::Actor* actor, bool managed, const json& saved, Draft& draft) {

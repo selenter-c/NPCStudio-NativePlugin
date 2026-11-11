@@ -19,7 +19,7 @@ struct Draft {
 nlohmann::json Describe(RE::Actor* actor, bool managed, const nlohmann::json& saved);
 nlohmann::json Height(RE::Actor* actor);
 void SetHeight(RE::Actor* actor, bool managed, const nlohmann::json& percent);
-bool TryOn(RE::Actor* actor, bool managed, const nlohmann::json& saved, const nlohmann::json& command, Draft& draft);
+void TryOn(RE::Actor* actor, bool managed, const nlohmann::json& saved, const nlohmann::json& command, Draft& draft);
 nlohmann::json Commit(RE::Actor* actor, bool managed, const nlohmann::json& saved, Draft& draft);
 void Cancel(Draft& draft);
 std::pair<RE::BGSHeadPart*, std::uint64_t> ThumbnailPart(RE::Actor* actor, RE::FormID id);
@@ -30,6 +30,4 @@ RE::BGSHeadPart* SavedHair(const nlohmann::json& saved);
 bool CanRestoreHair(RE::Actor* actor, RE::BGSHeadPart* part);
 bool OverridesHeadPart(const nlohmann::json& saved, RE::BGSHeadPart* part);
 void RestoreBaseFaceParts(RE::Actor* actor, const nlohmann::json& saved);
-RE::BGSHeadPart* VisualHair(RE::Actor* actor, const nlohmann::json& saved);
-bool HairAwaitingBones(RE::Actor* actor, RE::BGSHeadPart* hair);
 }

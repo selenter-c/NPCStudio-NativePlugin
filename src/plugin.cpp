@@ -4,6 +4,14 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
 namespace {
+constexpr REL::Version SupportedRuntimes[] = {
+    SKSE::RUNTIME_SSE_1_6_1130,
+    SKSE::RUNTIME_SSE_1_6_1170,
+    SKSE::RUNTIME_SSE_1_6_1179_GOG,
+    SKSE::RUNTIME_SSE_1_7_99,
+    SKSE::RUNTIME_SSE_1_7_104,
+};
+
 void Message(SKSE::MessagingInterface::Message* message) {
     auto& studio = NPCStudio::StudioService::Get();
     switch (message->type) {
@@ -34,17 +42,19 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     log->set_level(spdlog::level::info);
     log->flush_on(spdlog::level::info);
     spdlog::set_default_logger(log);
-    SKSE::Init(skse, false);
-    if (skse->RuntimeVersion() != REL::Version(1, 6, 1170, 0)) {
-        logger::error("Поддерживается Skyrim 1.6.1170; получен {}", skse->RuntimeVersion().string());
+    const auto runtime = skse->RuntimeVersion();
+    if (std::ranges::find(SupportedRuntimes, runtime) == std::end(SupportedRuntimes)) {
+        logger::error("Неподдерживаемый Skyrim {}. Допустимые версии: 1.6.1130, 1.6.1170, 1.6.1179 GOG, 1.7.99, 1.7.104", runtime.string("."));
         return false;
     }
+    SKSE::Init(skse, false);
     auto* serialization = SKSE::GetSerializationInterface();
     if (!serialization || !SKSE::GetMessagingInterface()->RegisterListener("SKSE", Message)) return false;
     serialization->SetUniqueID(0x5554534E);
     serialization->SetSaveCallback([](auto* stream) { NPCStudio::StudioService::Get().Save(stream); });
     serialization->SetLoadCallback([](auto* stream) { NPCStudio::StudioService::Get().Load(stream); });
     serialization->SetRevertCallback([](auto*) { NPCStudio::StudioService::Get().Revert(); });
-    logger::info("NPCStudio 0.8.7: Magelight, постоянный пул 200+200, сохранение SKSE");
+    logger::info("NPCStudio 0.8.9, Skyrim {}, SKSE {}: Magelight, постоянный пул 200+200, сохранение SKSE",
+        runtime.string("."), REL::Version::unpack(skse->SKSEVersion()).string("."));
     return true;
 }

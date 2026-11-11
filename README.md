@@ -1,8 +1,8 @@
 # NPC Studio Native Plugin
 
-The C++ SKSE plugin behind [NPC Studio](https://github.com/selenter-c/NPCStudio-GamePlugin), an in-game editor for permanent NPCs in Skyrim Special Edition 1.6.1170.
+The C++ SKSE plugin behind [NPC Studio](https://github.com/selenter-c/NPCStudio-GamePlugin), an in-game editor for permanent NPCs in Skyrim Special Edition on Steam and GOG.
 
-NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) playthroughs. It provides blank, persistent NPCs with editable identities, appearances, and equipment. They generally stand idle until an AI framework gives them actions or dialogue. Automatic SkyrimNet registration and biography generation are outside the 0.8.7 beta.
+NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) playthroughs. It provides blank, persistent NPCs with editable identities, appearances, and equipment. They generally stand idle until an AI framework gives them actions or dialogue. Automatic SkyrimNet registration and biography generation are in development.
 
 [**Download and install the beta**](https://github.com/selenter-c/NPCStudio-GamePlugin/releases) · [Build instructions](https://github.com/selenter-c/NPCStudio-Build)
 
@@ -11,13 +11,13 @@ NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNe
 - Permanent reference assignment and restoration for 400 reserved NPC slots.
 - Runtime editing for owned characters and supported world NPCs, with SKSE co-save persistence.
 - Equipment presets, inventory operations, and optional NPCs Names Distributor integration.
-- A Magelight v4 bridge for the editor and native integration for 3D previews and portraits.
+- A Magelight v4 bridge for the editor and live previews and portraits through the public API in [Phantasm 1.0](https://github.com/Severause/Phantasm/blob/c0531d4eae1cd1ac04607c9513b2edea8f7b58da/docs/API.md).
 
 ## Build and runtime
 
 The native target uses C++23, MSVC, CMake, Ninja, and vcpkg. It pins [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/8eaddedd1542290701ccb0e9e88b2af8b3cea597) and builds against the Skyrim AE runtime. Use the [Build repository](https://github.com/selenter-c/NPCStudio-Build) for the complete toolchain and packaging commands.
 
-The installed mod requires [SKSE64 2.2.6](https://skse.silverlock.org/), [AE Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444), and [Magelight UI](https://www.nexusmods.com/skyrimspecialedition/mods/193303) with its v4 API. See the [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) for optional dependencies.
+The same DLL targets Steam 1.6.1130, 1.6.1170, 1.7.99, and 1.7.104, plus GOG 1.6.1179. The runtime check uses the version reported by SKSE, including the GOG marker. The CommonLib pin reads Address Library formats 2 and 5. See the [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) for the SKSE and Magelight requirements.
 
 ## Credits and licensing
 

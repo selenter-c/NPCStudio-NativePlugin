@@ -1,8 +1,7 @@
 #include "preview/ActorPreview.h"
-#include "preview/PhantasmAPI.h"
+#include "preview/PhantasmProvider.h"
 #include "preview/PreviewMath.h"
 #include "ui/MagelightBridge.h"
-#include <bcrypt.h>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
@@ -18,17 +17,19 @@
 
 namespace NPCStudio::Preview {
 using json = nlohmann::json;
-namespace P = Phantasm;
-static const P::API* Api = nullptr;
-static P::Id Client = 0;
+namespace P = PHANTASM_API;
+static const P::Interface1* Api = nullptr;
+static P::ClientId Client = 0;
 static std::mutex Guard;
 static std::uint64_t Generation = 1;
 struct LiveState {
-    P::Id view = 0, form = 0;
+    P::ViewId view = 0;
+    RE::FormID form = 0;
     std::string identity, image, kind;
     float yaw = 0, pitch = 0, zoom = 1;
     float panX = 0, panY = 0;
-    std::string lighting;
+    std::string lighting, worn;
+    bool motion = false, waiting = false, lastSeen = false;
 };
 static LiveState Live;
 struct PortraitRequest {
@@ -37,7 +38,7 @@ struct PortraitRequest {
     float x = 0, y = 0, size = 1;
     bool crop = false;
     unsigned thumbnailToken = 0;
-    P::Id thumbnailRequest = 0;
+    std::uint32_t stillId = 0;
     std::filesystem::path thumbnailCache;
 };
 static std::unordered_map<std::uintptr_t, PortraitRequest> Portraits;
@@ -66,44 +67,48 @@ static std::string ReadImage(const std::filesystem::path& path, std::uintmax_t m
 }
 static json Describe(const LiveState& state) {
     return {{"identity", state.identity}, {"kind", state.kind}, {"image", state.image},
-        {"pending", state.image.empty()}, {"backend", "Phantasm 0.3.0"}};
+        {"pending", state.image.empty()}, {"waiting", state.waiting}, {"lastSeen", state.lastSeen}, {"backend", "Phantasm"}};
 }
 static void Check(P::Result result, const char* operation) {
-    if (result != 0) throw std::runtime_error(fmt::format("Phantasm {}: result {}", operation, result));
+    if (result != P::Result::Ok) throw std::runtime_error(fmt::format("Phantasm {}: result {}", operation, static_cast<int>(result)));
 }
-static std::string Digest(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(stream)), {});
-    if (!stream || bytes.empty() || bytes.size() > 32 * 1024 * 1024) throw std::runtime_error("Cannot verify Phantasm.dll");
-    unsigned char hash[32]{};
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_HASH_HANDLE state = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        throw std::runtime_error("Cannot open SHA-256 provider");
-    auto status = BCryptCreateHash(algorithm, &state, nullptr, 0, nullptr, 0, 0);
-    if (status >= 0) status = BCryptHashData(state, bytes.data(), static_cast<ULONG>(bytes.size()), 0);
-    if (status >= 0) status = BCryptFinishHash(state, hash, 32, 0);
-    if (state) BCryptDestroyHash(state);
-    BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status < 0) throw std::runtime_error("Cannot hash Phantasm.dll");
-    std::string result;
-    for (auto value : hash) result += fmt::format("{:02x}", value);
-    return result;
+static void MoveCamera(P::ViewId view, const LiveState& previous, const LiveState& next, bool fresh) {
+    const auto yaw = next.yaw - (!next.worn.empty() && next.worn != "off" ? 180.f : 0.f);
+    const auto oldYaw = fresh ? 0.f : previous.yaw - (!previous.worn.empty() && previous.worn != "off" ? 180.f : 0.f);
+    const auto oldPitch = fresh ? 0.f : previous.pitch;
+    if (yaw != oldYaw || next.pitch != oldPitch)
+        Check(Api->Orbit(view, OrbitDelta(oldYaw, yaw), 2.f * (next.pitch - oldPitch)), "Orbit");
+    if (fresh || next.zoom != previous.zoom || next.panX != previous.panX || next.panY != previous.panY) {
+        const auto scale = CameraScale(next.zoom);
+        // На масштабе 1 провайдер сбрасывает цель камеры.
+        if (!fresh) Check(Api->Zoom(view, ZoomDelta(CameraScale(previous.zoom), 1.f), .5f, .5f), "Reset camera target");
+        const auto u = scale >= .9999f ? .5f : std::clamp(.5f - next.panX * scale / (1.f - scale), 0.f, 1.f);
+        const auto v = scale >= .9999f ? .5f : std::clamp(.5f - next.panY * scale / (1.f - scale), 0.f, 1.f);
+        Check(Api->Zoom(view, ZoomDelta(1.f, scale), u, v), "Position camera target");
+    }
 }
 static void OnEvent(const P::Event* event, void* cookie) noexcept {
     try {
-        if (!event || event->size < sizeof(P::Event)) return;
+        if (!event || event->size < offsetof(P::Event, imageUrl) + sizeof(event->imageUrl)) return;
         json update;
         {
             std::lock_guard lock(Guard);
-            if (reinterpret_cast<std::uintptr_t>(cookie) != Generation || !Live.form || event->form != Live.form || (Live.view && event->view != Live.view)) return;
-            if (event->kind == 1 && event->imageUrl && *event->imageUrl) {
+            if (reinterpret_cast<std::uintptr_t>(cookie) != Generation || !Live.view ||
+                event->actorFormId != Live.form || event->view != Live.view) return;
+            if (event->kind == P::EventKind::Shown && event->imageUrl && *event->imageUrl) {
+                if (Live.waiting) MoveCamera(Live.view, {}, Live, true);
+                Live.waiting = false;
+                Live.lastSeen = event->size >= offsetof(P::Event, lastSeen) + sizeof(event->lastSeen) && event->lastSeen;
                 Live.image = event->imageUrl;
                 update = Describe(Live);
-            } else if (event->kind == 3 && Live.view == event->view) {
+            } else if (event->kind == P::EventKind::Waiting || event->kind == P::EventKind::Ended) {
+                Live.waiting = event->kind == P::EventKind::Waiting;
                 Live.image.clear();
                 update = Describe(Live);
-                update["error"] = event->reason ? event->reason : "View ended";
+                if (!Live.waiting) {
+                    Live.view = 0;
+                    update["error"] = event->reason ? event->reason : "View ended";
+                }
             } else return;
             update["generation"] = Generation;
         }
@@ -143,16 +148,19 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
             if (request.thumbnailToken) result["token"] = request.thumbnailToken;
             UI::PublishPreview(std::move(result));
         };
-        if (!still || still->size < sizeof(P::Still) || !still->ok || !still->pixels ||
+        if (!still || still->size < offsetof(P::Still, rgba) + sizeof(still->rgba)) {
+            publish({{"error", "Still failed"}});
+            return;
+        }
+        if (!still->ok || !still->rgba ||
             still->width == 0 || still->height == 0 || still->width > 1024 || still->height > 1024) {
             publish({{"error", still && still->reason ? still->reason : "Still failed"}});
             return;
         }
-        // Readback провайдера упаковывает строки в width*4. Поле metadata не является RowPitch.
-        // Пиксели принадлежат провайдеру только до возврата callback.
+        // RGBA упакован без отступов и действителен только до возврата callback.
         int size = 0;
         std::vector<unsigned char> cropped;
-        const auto* pixels = still->pixels;
+        const auto* pixels = still->rgba;
         unsigned width = still->width, height = still->height;
         if (request.crop) {
             cropped.resize(256 * 256 * 4);
@@ -186,58 +194,36 @@ static void OnStill(const P::Still* still, void* cookie) noexcept {
 }
 static void Initialize() {
     if (!Api) {
-        auto module = GetModuleHandleW(L"Phantasm.dll");
-        if (!module) throw std::runtime_error("Reinstall the complete NPCStudio package including Phantasm, then restart Skyrim");
-        wchar_t path[32768]{};
-        if (!GetModuleFileNameW(module, path, static_cast<DWORD>(std::size(path)))) throw std::runtime_error("Cannot locate Phantasm.dll");
-        if (Digest(path) != "8b9bf8341dee500c033c8777d3b616d968295676c91bbaf2946d7ae611bd7cff")
-            throw std::runtime_error("Unsupported Phantasm build: expected 0.3.0 ccf916f72d59");
-        auto factory = reinterpret_cast<const P::API* (*)(unsigned)>(GetProcAddress(module, "RequestPluginAPI"));
-        if (!factory) throw std::runtime_error("Phantasm API export missing");
-        auto* api = factory(1);
-        if (!api || api->size != sizeof(P::API) || api->version != 1 || api->providerVersion != 300)
-            throw std::runtime_error("Unsupported Phantasm API layout");
-        const auto base = reinterpret_cast<std::uintptr_t>(module);
-        // Проверяем экспортированную таблицу, а не вызываем приватные функции по смещениям.
-        std::uintptr_t addresses[16]{};
-        std::memcpy(addresses, reinterpret_cast<const char*>(api) + 0x10, sizeof(addresses));
-        for (unsigned i = 0; i < std::size(addresses); ++i)
-            if (addresses[i] != base + P::FunctionRvas[i]) throw std::runtime_error("Unexpected Phantasm API function table");
+        const auto module = GetModuleHandleW(L"Phantasm.dll");
+        if (!module) throw std::runtime_error("Enable Phantasm 1.0.0 or newer and restart Skyrim");
+        const auto factory = reinterpret_cast<P::RequestPluginAPIFn>(GetProcAddress(module, "RequestPluginAPI"));
+        const auto* api = factory ? static_cast<const P::Interface1*>(factory(P::kInterface1)) : nullptr;
+        if (!SupportsPhantasm(api)) throw std::runtime_error("The active Phantasm DLL is too old. Use Phantasm 1.0.0 or newer");
         Api = api;
-        logger::info("Превью: Phantasm 0.3.0, экспортированный API 1 проверен по SHA-256 и ABI");
+        logger::info("Превью: подключён публичный Phantasm API {}, версия {}", api->interfaceVersion, api->pluginVersion);
     }
-    if (!Client) Check(Api->RegisterClient(P::ClientName, OnEvent, reinterpret_cast<void*>(static_cast<std::uintptr_t>(Generation)), &Client), "RegisterClient");
+    if (!Client) Check(Api->RegisterClient("npcstudio", OnEvent, reinterpret_cast<void*>(static_cast<std::uintptr_t>(Generation)), &Client), "RegisterClient");
 }
 bool IsCurrent(std::uint64_t generation) {
     std::lock_guard lock(Guard);
     return generation == Generation;
 }
-void PublishFrameError(const std::string& identity, const std::string& error) {
-    std::uint64_t generation;
-    { std::lock_guard lock(Guard); generation = Generation; }
-    UI::PublishPreview({{"identity", identity}, {"kind", "actor"}, {"generation", generation}, {"error", error}});
-}
 void Clear() {
-    P::Id thumbnail = 0;
     {
         std::lock_guard lock(Guard);
         ++Generation;
         Live = {};
-        if (!Portraits.empty()) thumbnail = Portraits.begin()->second.thumbnailRequest;
         Portraits.clear();
     }
     const auto client = std::exchange(Client, 0);
-    if (Api && client) {
-        if (thumbnail) Api->CancelStill(client, thumbnail);
-        Api->ReleaseClient(client);
-    }
+    if (Api && client) Api->ReleaseClient(client);
 }
-static json LiveFrame(P::Id form, const std::string& identity, const json& options, bool item) {
+static json LiveFrame(RE::FormID form, const std::string& identity, const json& options, bool item) {
     Initialize();
     {
         std::lock_guard lock(Guard);
         // Запоздавшая команда камеры не должна менять кадр во время readback.
-        if (!Portraits.empty()) return Describe(Live);
+        if (!Portraits.empty() && Portraits.begin()->second.crop) return Describe(Live);
     }
     const auto yaw = options.value("yaw", 0.f), zoom = options.value("zoom", 1.f);
     const auto pitch = std::clamp(options.value("pitch", 0.f), -75.f, 75.f);
@@ -246,111 +232,104 @@ static json LiveFrame(P::Id form, const std::string& identity, const json& optio
     const auto panY = std::clamp(options.value("panY", 0.f), -.4f, .4f);
     if (!std::isfinite(panX) || !std::isfinite(panY)) throw std::runtime_error("Invalid camera offset");
     static const std::unordered_set<std::string> lights{"studio", "daylight", "hearth", "torchlight", "moonlight", "here"};
-    if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(zoom) || zoom < .25f || zoom > 4.f || !lights.contains(light))
+    if (!std::isfinite(yaw) || std::abs(yaw) > 36000 || !std::isfinite(pitch) || !std::isfinite(zoom) || zoom < .25f || zoom > 4.f || !lights.contains(light))
         throw std::runtime_error("Invalid preview camera");
-    P::Id old = 0, view = 0;
+    const auto worn = item ? options.value("worn", std::string("off")) : std::string{};
+    if (item && worn != "off" && worn != "male" && worn != "female") throw std::runtime_error("Invalid armor preview mode");
+    const bool motion = !item && options.value("motion", false);
+    const auto kind = item ? "item" : "actor";
+    LiveState previous;
     bool open;
-    float previousYaw, previousPitch, previousZoom;
-    std::string previousLight;
     {
         std::lock_guard lock(Guard);
-        open = !Live.view || Live.identity != identity || Live.kind != (item ? "item" : "actor");
+        open = !Live.view || Live.form != form || Live.identity != identity || Live.kind != kind;
         if (open) {
-            old = Live.view;
+            if (Live.view) Api->CloseView(Live.view);
             Live = {};
-            Live.form = form; Live.identity = identity; Live.kind = item ? "item" : "actor";
-        }
-        view = Live.view;
-        previousYaw = Live.yaw; previousPitch = Live.pitch; previousZoom = Live.zoom; previousLight = Live.lighting;
+        } else previous = Live;
     }
-    if (old) Api->CloseView(old);
+    auto next = previous;
+    next.form = form;
+    next.identity = identity;
+    next.kind = kind;
+    next.yaw = yaw;
+    next.pitch = pitch;
+    next.zoom = zoom;
+    next.panX = panX;
+    next.panY = panY;
+    next.lighting = light;
+    next.worn = worn;
+    next.motion = motion;
+    auto& view = next.view;
     if (open) {
-        if (item) Check(Api->OpenItem(Client, "item", form, 512, 512, &view), "OpenItem");
-        else Check(Api->OpenActor(Client, "actor", form, 480, 640, 0, &view), "OpenActor");
-        if (!item) {
-            const auto classic = options.value("classicPose", false);
-            Check(Api->SetHint(view, "pose", classic ? "classic" : "captured"), "SetHint pose");
-            Check(Api->SetHint(view, "weapons", "on"), "SetHint weapons");
-            // Замораживаем скопированную позу: граф может содержать боевой цикл под обычным idle.
-            Check(Api->SetHint(view, "motion", "false"), "SetHint motion");
-        }
-        std::lock_guard lock(Guard);
-        Live.view = view;
+        if (item) Check(Api->OpenItemView(Client, "item", form, 512, 512, &view), "OpenItemView");
+        else Check(Api->OpenView(Client, "actor", form, 480, 640, P::Framing::Figure, &view), "OpenView");
     }
     if (!view) throw std::runtime_error("Phantasm returned an empty view");
-    // Orbit принимает градусы, Zoom — величину колеса: zoom *= pow(1.0015, delta).
-    if (yaw != previousYaw || pitch != previousPitch) Check(Api->Orbit(view, OrbitDelta(previousYaw, yaw), pitch - previousPitch), "Orbit");
-    const auto cameraScale = CameraScale;
-    // При возврате scale к 1 провайдер сбрасывает цель камеры; следующий anchored zoom задаёт её заново.
-    // Это перемещение внутри renderer: HTML-текстура остаётся на месте.
-    float oldPanX, oldPanY;
-    { std::lock_guard lock(Guard); oldPanX = Live.panX; oldPanY = Live.panY; }
-    if (open || zoom != previousZoom || panX != oldPanX || panY != oldPanY) {
-        const auto scale = cameraScale(zoom);
-        if (!open) Check(Api->Zoom(view, ZoomDelta(cameraScale(previousZoom), 1.f), .5f, .5f), "Reset camera target");
-        const auto u = scale >= .9999f ? .5f : std::clamp(.5f - panX * scale / (1.f - scale), 0.f, 1.f);
-        const auto v = scale >= .9999f ? .5f : std::clamp(.5f - panY * scale / (1.f - scale), 0.f, 1.f);
-        Check(Api->Zoom(view, ZoomDelta(1.f, scale), u, v), "Position camera target");
+    try {
+        if (item) {
+            if (worn != previous.worn) Check(Api->SetHint(view, "worn", worn.c_str()), "SetHint worn");
+        } else {
+            if (open) {
+                Check(Api->SetHint(view, "pose", "captured"), "SetHint pose");
+                Check(Api->SetHint(view, "weapons", "on"), "SetHint weapons");
+            }
+            if (open || motion != previous.motion) Check(Api->SetHint(view, "motion", motion ? "on" : "off"), "SetHint motion");
+            if (light != previous.lighting) Check(Api->SetHint(view, "lighting", light.c_str()), "SetHint lighting");
+            if (!open && options.value("capture", false)) Check(Api->Refresh(view), "Refresh");
+        }
+        if (!next.waiting) MoveCamera(view, previous, next, open || worn != previous.worn);
+    } catch (...) {
+        if (open) Api->CloseView(view);
+        throw;
     }
-    if (light != previousLight) Check(Api->SetHint(view, "lighting", light.c_str()), "SetHint");
-    if (!open && options.value("capture", false)) Check(Api->Refresh(view), "Refresh");
     std::lock_guard lock(Guard);
-    Live.yaw = yaw; Live.pitch = pitch; Live.zoom = zoom; Live.lighting = light;
-    Live.panX = panX; Live.panY = panY;
+    Live = std::move(next);
     return Describe(Live);
 }
 std::string ReadPortrait(const std::string& identity) {
     return ReadImage(PortraitPath(identity), 2000000);
 }
 json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
-    if (!actor || actor->IsDisabled() || actor->IsDead() || !actor->Is3DLoaded())
+    if (!actor || actor->IsDisabled() || actor->IsDead())
         throw std::runtime_error("NPC model is not loaded. Summon the character first");
     if (!options.value("portraitOnly", false)) return LiveFrame(actor->GetFormID(), identity, options, false);
     if (!options.value("capture", false)) {
         auto image = ReadPortrait(identity);
         if (!image.empty()) return {{"identity", identity}, {"kind", "portrait"}, {"portrait", image}};
     }
-    Initialize();
     const bool editorCapture = options.value("editorCapture", false);
+    if (!editorCapture && !actor->Is3DLoaded()) throw std::runtime_error("NPC model is not loaded. Summon the character first");
+    Initialize();
     std::uintptr_t ticket;
-    P::Id closeView = 0;
+    PortraitRequest shot{identity, 0};
+    if (editorCapture) {
+        shot.crop = true;
+        shot.x = options.value("cropX", 0.f);
+        shot.y = options.value("cropY", 0.f);
+        shot.size = options.value("cropSize", .5f);
+        if (!std::isfinite(shot.x) || !std::isfinite(shot.y) || !std::isfinite(shot.size) ||
+            shot.x < 0 || shot.y < 0 || shot.size < .05f || shot.x + shot.size > 1.0001f ||
+            shot.y + shot.size * .75f > 1.0001f)
+            throw std::runtime_error("Invalid portrait crop");
+    }
     {
         std::lock_guard lock(Guard);
         if (!Portraits.empty()) throw std::runtime_error("Portrait queue is full");
         if (editorCapture) {
-            if (!Live.view || Live.identity != identity || Live.kind != "actor" || Live.image.empty())
+            if (!Live.view || Live.form != actor->GetFormID() || Live.identity != identity || Live.kind != "actor" || Live.image.empty())
                 throw std::runtime_error("Wait for the live preview before saving the portrait");
         }
-        closeView = Live.view;
-        Live = {};
         ticket = ++NextPortrait;
-        Portraits.emplace(ticket, PortraitRequest{identity, Generation});
-        if (editorCapture) {
-            auto& shot = Portraits.at(ticket);
-            shot.crop = true;
-            shot.x = std::clamp(options.value("cropX", 0.f), 0.f, 1.f);
-            shot.y = std::clamp(options.value("cropY", 0.f), 0.f, 1.f);
-            shot.size = std::clamp(options.value("cropSize", .5f), .05f, 1.f);
-            // Отдельный полнофигурный снимок имеет базовый масштаб камеры.
-            const auto scale = CameraScale(std::clamp(options.value("zoom", 1.f), .25f, 4.f));
-            const auto limit = std::max(0.f, (1.f - scale) / (2.f * scale));
-            const auto px = std::clamp(options.value("panX", 0.f), -limit, limit);
-            const auto py = std::clamp(options.value("panY", 0.f), -limit, limit);
-            shot.x = .5f + (shot.x - .5f - px) * scale;
-            shot.y = .5f + (shot.y - .5f - py) * scale;
-            shot.size *= scale;
-        }
+        shot.generation = Generation;
+        Portraits.emplace(ticket, std::move(shot));
     }
-    // Framing 0 читает текущий live-кадр; framing 1/2 создаёт отдельный снимок и требует закрытия вида.
-    if (closeView) Check(Api->CloseView(closeView), "CloseView for portrait");
-    logger::info("Портрет: запрос ticket={}, actor={:08X}, editor={}, live={}", ticket, actor->GetFormID(), editorCapture, Live.view);
-    P::Id request = 0;
-    const auto hints = fmt::format("turn={};pitch={};lighting={};weapons=on", options.value("yaw", 0.f), options.value("pitch", 0.f), options.value("light", std::string("studio")));
+    std::uint32_t request = 0;
+    // Figure снимает текущую камеру и свет. Автопортрет рисуется отдельно рядом с живым видом.
     const auto result = editorCapture ?
-        Api->RequestStillHinted(Client, actor->GetFormID(), 480, 640, 2, hints.c_str(), OnStill, reinterpret_cast<void*>(ticket), &request) :
-        Api->RequestStillHinted(Client, actor->GetFormID(), 144, 144, 1, "weapons=on", OnStill, reinterpret_cast<void*>(ticket), &request);
-    logger::info("Портрет: provider result={}, request={}", result, request);
-    if (result != 0) {
+        Api->RequestStill(Client, actor->GetFormID(), 480, 640, P::Framing::Figure, OnStill, reinterpret_cast<void*>(ticket), &request) :
+        Api->RequestStillHinted(Client, actor->GetFormID(), 144, 144, P::Framing::Portrait, "weapons=on", OnStill, reinterpret_cast<void*>(ticket), &request);
+    if (result != P::Result::Ok) {
         std::lock_guard lock(Guard);
         Portraits.erase(ticket);
         Check(result, "RequestStill");
@@ -359,14 +338,20 @@ json Frame(RE::Actor* actor, const std::string& identity, const json& options) {
 }
 json ItemFrame(RE::TESBoundObject* item, const json& options) {
     if (!item || !item->Is(RE::FormType::Armor, RE::FormType::Weapon, RE::FormType::Ammo)) throw std::runtime_error("Unsupported preview item");
-    return LiveFrame(item->GetFormID(), fmt::format("item-{:08X}", item->GetFormID()), options, true);
+    if (item->Is(RE::FormType::Armor)) return LiveFrame(item->GetFormID(), fmt::format("item-{:08X}", item->GetFormID()), options, true);
+    auto ground = options;
+    ground["worn"] = "off";
+    return LiveFrame(item->GetFormID(), fmt::format("item-{:08X}", item->GetFormID()), ground, true);
 }
 void CancelHairThumbnail(unsigned token) {
+    std::uint32_t request = 0;
     {
         std::lock_guard lock(Guard);
         if (!token || Portraits.empty() || Portraits.begin()->second.thumbnailToken != token) return;
+        request = Portraits.begin()->second.stillId;
+        Portraits.erase(Portraits.begin());
     }
-    Clear();
+    if (request) Api->CancelStill(Client, request);
 }
 static std::filesystem::path HairThumbnailPath(std::uint64_t fingerprint) {
     return std::filesystem::path("Data/SKSE/Plugins/NPCStudio/HairThumbnails/v1") / fmt::format("{:016X}.image", fingerprint);
@@ -385,32 +370,28 @@ json HairThumbnail(RE::BGSHeadPart* part, unsigned token, std::uint64_t fingerpr
     auto* proxy = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESObjectMISC>(0x802 + (proxyIndex % 2), "NPCStudio.esp");
     if (!proxy) throw std::runtime_error("Обновите NPCStudio.esp для миниатюр");
     std::uintptr_t ticket;
-    P::Id closeView;
     {
         std::lock_guard lock(Guard);
         if (!Portraits.empty()) throw std::runtime_error("busy");
-        closeView = Live.view;
-        Live = {};
         ticket = ++NextPortrait;
         Portraits.emplace(ticket, PortraitRequest{identity, Generation, 0, 0, 1, false, token});
         Portraits.at(ticket).thumbnailCache = cache;
     }
     ++proxyIndex;
-    if (closeView) Api->CloseView(closeView);
     // Провайдер повторно использует модель для одинакового FormID. Чередуем две формы без ссылок в мире.
     auto path = std::string_view(part->GetModel());
     if (path.starts_with("meshes\\") || path.starts_with("Meshes\\")) path.remove_prefix(7);
     proxy->SetModel(std::string(path).c_str());
-    P::Id request = 0;
+    std::uint32_t request = 0;
     const auto result = Api->RequestItemStill(Client, proxy->GetFormID(), 128, 128, "turn=180", OnStill, reinterpret_cast<void*>(ticket), &request);
-    if (result != 0) {
+    if (result != P::Result::Ok) {
         std::lock_guard lock(Guard);
         Portraits.erase(ticket);
         Check(result, "Hair thumbnail");
     }
     {
         std::lock_guard lock(Guard);
-        if (auto it = Portraits.find(ticket); it != Portraits.end()) it->second.thumbnailRequest = request;
+        if (auto it = Portraits.find(ticket); it != Portraits.end()) it->second.stillId = request;
     }
     return {{"kind", "hairThumbnail"}, {"pending", true}, {"identity", identity}, {"token", token}};
 }

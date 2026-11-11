@@ -91,7 +91,8 @@ json StudioService::Snapshot() const {
             {"reference", fmt::format("{:08X}", slot.actor->GetFormID())},
             {"raceId", slot.actor->GetRace() ? slot.actor->GetRace()->GetFormEditorID() : ""}, {"race", slot.actor->GetRace() ? slot.actor->GetRace()->GetName() : ""}});
     }
-    return {{"version", "0.8.7"}, {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
+    return {{"version", "0.8.9"}, {"runtime", REL::Module::get().version().string(".")},
+        {"races", ready ? Races::List() : json::array()}, {"ready", ready && stateValid}, {"worldLoaded", loaded}, {"error", error},
         {"femaleUsed", females}, {"maleUsed", males}, {"slots", list}, {"availableSlots", available}, {"capacity", 200}, {"library", Equipment::Library()}, {"settings", UI::Settings()},
         {"capabilities", {{"preview", true}, {"equipment", true}, {"appearance", true}, {"biography", false}}}};
 }
@@ -101,24 +102,14 @@ void StudioService::PickAppearanceTarget() {
     if (auto* crosshair = RE::CrosshairPickData::GetSingleton()) appearanceTarget = crosshair->GetActiveTarget();
 }
 void StudioService::CancelAppearance() {
-    lookFrame.reset();
-    lookClassicPose = false;
     if (auto target = hairDraft.target.get()) {
         if (auto it = externalLooks.find(target->GetFormID()); it != externalLooks.end()) it->second.appliedNode = nullptr;
     }
     Appearance::Cancel(hairDraft);
 }
 
-json StudioService::QueueLookFrame(RE::Actor* actor, RE::BGSHeadPart* hair, const std::string& identity, const json& options) {
-    lookFrame = LookFrame{actor->GetHandle(), hair, identity, options, std::chrono::steady_clock::now() + std::chrono::milliseconds(35)};
-    workPending = true;
-    UI::SetWorldWork(true);
-    return {{"partial", true}, {"preview", {{"identity", identity}, {"kind", "actor"}, {"pending", true}}}};
-}
-
 json StudioService::RenderLookFrame(RE::Actor* actor, const std::string& identity, json options) {
     options["portraitOnly"] = false;
-    options["classicPose"] = lookClassicPose;
     return Preview::Frame(actor, identity, options);
 }
 
@@ -214,37 +205,25 @@ json StudioService::Execute(const json& command) {
             return {{"partial", true}, {"hairThumbnails", std::move(images)}};
         }
         if (action == "hairThumbnail") {
-            lookFrame.reset();
             const auto [part, fingerprint] = Appearance::ThumbnailPart(actor, command.at("hair").get<RE::FormID>());
             return {{"partial", true}, {"hairThumbnail", Preview::HairThumbnail(part, command.at("token").get<unsigned>(), fingerprint)}};
         }
         const auto previewIdentity = fmt::format("look-{:08X}", actor->GetFormID());
         if (action == "appearanceFrame") {
-            if (lookFrame && lookFrame->identity == previewIdentity) {
-                lookFrame->options = command;
-                return {{"partial", true}, {"preview", {{"identity", previewIdentity}, {"kind", "actor"}, {"pending", true}}}};
-            }
-            if (command.value("resume", false)) {
-                Preview::Clear();
-                lookClassicPose = false;
-                auto* hair = hairDraft.target.get().get() == actor ? hairDraft.hair : Appearance::VisualHair(actor, saved);
-                if (Appearance::HairAwaitingBones(actor, hair)) return QueueLookFrame(actor, hair, previewIdentity, command);
-            }
             return {{"partial", true}, {"preview", RenderLookFrame(actor, previewIdentity, command)}};
         }
         if (action == "applyAppearance" || action == "tryAppearance") {
             if (action == "applyAppearance" && !managed && externalLooks.size() >= 128 && !externalLooks.contains(actor->GetFormID()))
                 throw std::runtime_error("Достигнут лимит внешних NPC");
-            Preview::Clear();
-            if (hairDraft.target && hairDraft.target.get().get() != actor) CancelAppearance();
-            const bool changedParts = Appearance::TryOn(actor, managed, saved, command, hairDraft);
+            if (hairDraft.target && hairDraft.target.get().get() != actor) {
+                Preview::Clear();
+                CancelAppearance();
+            }
+            Appearance::TryOn(actor, managed, saved, command, hairDraft);
             if (action == "tryAppearance") {
-                if (changedParts) return QueueLookFrame(actor, hairDraft.hair, previewIdentity, command);
-                if (lookFrame && lookFrame->identity == previewIdentity) {
-                    lookFrame->options = command;
-                    return {{"partial", true}, {"preview", {{"identity", previewIdentity}, {"kind", "actor"}, {"pending", true}}}};
-                }
-                return {{"partial", true}, {"preview", RenderLookFrame(actor, previewIdentity, command)}};
+                auto options = command;
+                options["capture"] = true;
+                return {{"partial", true}, {"preview", RenderLookFrame(actor, previewIdentity, std::move(options))}};
             }
             saved = Appearance::Commit(actor, managed, saved, hairDraft);
             if (managed) {
@@ -442,20 +421,7 @@ void StudioService::QueueRestore(Slot& slot, const std::string& preset) {
     UI::SetWorldWork(true);
 }
 void StudioService::Pump() {
-    if (!loaded || !stateValid) { lookFrame.reset(); restoring.clear(); workPending = false; externalWork = false; UI::SetWorldWork(false); return; }
-    if (lookFrame && std::chrono::steady_clock::now() >= lookFrame->earliest) {
-        auto target = lookFrame->target.get();
-        auto* actor = target ? target->As<RE::Actor>() : nullptr;
-        const bool unbound = actor && Appearance::HairAwaitingBones(actor, lookFrame->hair);
-        if (!unbound || ++lookFrame->attempts >= 2) {
-            auto frame = std::move(*lookFrame);
-            lookFrame.reset();
-            lookClassicPose = unbound;
-            if (unbound) logger::info("Превью {}: волосы ещё без привязки, используем исходную позу", frame.identity);
-            try { RenderLookFrame(actor, frame.identity, std::move(frame.options)); }
-            catch (const std::exception& e) { Preview::PublishFrameError(frame.identity, e.what()); }
-        }
-    }
+    if (!loaded || !stateValid) { restoring.clear(); workPending = false; externalWork = false; UI::SetWorldWork(false); return; }
     const auto draftTarget = hairDraft.target.get();
     for (auto& [id, edit] : externalLooks) {
         if (draftTarget && draftTarget->GetFormID() == id) continue;
@@ -565,11 +531,11 @@ void StudioService::Pump() {
             it = restoring.erase(it);
         } catch (const std::exception& e) { assignments[key]["warning"] = e.what(); logger::warn("Восстановление слот {}: {}", slot.id, e.what()); it = restoring.erase(it); }
     }
-    workPending = !restoring.empty() || settlingTicks > 0 || lookFrame.has_value();
+    workPending = !restoring.empty() || settlingTicks > 0;
     externalWork = !externalLooks.empty() || !managedSkinNodes.empty();
     UI::SetWorldWork(workPending.load());
 }
-void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; lookFrame.reset(); restoring.clear(); settlingTicks = 0; workPending = false; externalWork = false; appearanceTarget.reset(); loaded = false; UI::SetWorldWork(false); }
+void StudioService::BeforeLoad() { Preview::Clear(); ++worldEpoch; restoring.clear(); settlingTicks = 0; workPending = false; externalWork = false; appearanceTarget.reset(); loaded = false; UI::SetWorldWork(false); }
 
 void StudioService::RestoreNames() {
     if (!ready || !stateValid) return;
@@ -608,7 +574,6 @@ void StudioService::AfterLoad(bool success) {
 }
 
 void StudioService::NewGame() {
-    lookFrame.reset();
     settlingTicks = 0;
     UI::SetWorldWork(false);
     Preview::Clear();
@@ -631,7 +596,6 @@ void StudioService::Revert() {
     assignments = json::object();
     externalLooks.clear(); managedSkinNodes.clear(); externalWork = false; appearanceTarget.reset();
     hairDraft = {};
-    lookFrame.reset();
 }
 
 void StudioService::Save(SKSE::SerializationInterface* stream) {
