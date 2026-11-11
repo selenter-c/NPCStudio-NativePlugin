@@ -54,7 +54,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     serialization->SetSaveCallback([](auto* stream) { NPCStudio::StudioService::Get().Save(stream); });
     serialization->SetLoadCallback([](auto* stream) { NPCStudio::StudioService::Get().Load(stream); });
     serialization->SetRevertCallback([](auto*) { NPCStudio::StudioService::Get().Revert(); });
-    logger::info("NPCStudio 0.8.9, Skyrim {}, SKSE {}: Magelight, постоянный пул 200+200, сохранение SKSE",
+    logger::info("NPCStudio 0.8.10, Skyrim {}, SKSE {}: Magelight, постоянный пул 200+200, сохранение SKSE",
         runtime.string("."), REL::Version::unpack(skse->SKSEVersion()).string("."));
     return true;
 }

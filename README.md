@@ -11,13 +11,13 @@ NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNe
 - Permanent reference assignment and restoration for 400 reserved NPC slots.
 - Runtime editing for owned characters and supported world NPCs, with SKSE co-save persistence.
 - Equipment presets, inventory operations, and optional NPCs Names Distributor integration.
-- A Magelight v4 bridge for the editor and live previews and portraits through the public API in [Phantasm 1.0](https://github.com/Severause/Phantasm/blob/c0531d4eae1cd1ac04607c9513b2edea8f7b58da/docs/API.md).
+- A Magelight v4 bridge for the editor, live previews, and portraits.
 
 ## Build and runtime
 
 The native target uses C++23, MSVC, CMake, Ninja, and vcpkg. It pins [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/8eaddedd1542290701ccb0e9e88b2af8b3cea597) and builds against the Skyrim AE runtime. Use the [Build repository](https://github.com/selenter-c/NPCStudio-Build) for the complete toolchain and packaging commands.
 
-The same DLL targets Steam 1.6.1130, 1.6.1170, 1.7.99, and 1.7.104, plus GOG 1.6.1179. The runtime check uses the version reported by SKSE, including the GOG marker. The CommonLib pin reads Address Library formats 2 and 5. See the [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) for the SKSE and Magelight requirements.
+The same DLL targets Steam 1.6.1130, 1.6.1170, 1.7.99, and 1.7.104, plus GOG 1.6.1179. The runtime check uses the version reported by SKSE, including the GOG marker. The CommonLib pin reads Address Library formats 2 and 5. The [player guide](https://github.com/selenter-c/NPCStudio-GamePlugin#requirements) lists the runtime dependencies.
 
 ## Credits and licensing
 
