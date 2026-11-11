@@ -4,7 +4,7 @@ The C++ SKSE plugin behind [NPC Studio](https://github.com/selenter-c/NPCStudio-
 
 NPC Studio was built primarily for [SkyrimNet](https://github.com/MinLL/SkyrimNet-GamePlugin) playthroughs. It provides blank, persistent NPCs with editable identities, appearances, and equipment. They generally stand idle until an AI framework gives them actions or dialogue. Automatic SkyrimNet registration and biography generation are in development.
 
-[**Download and install the beta**](https://github.com/selenter-c/NPCStudio-GamePlugin/releases) · [Build instructions](https://github.com/selenter-c/NPCStudio-Build)
+[**Download NPC Studio**](https://github.com/selenter-c/NPCStudio-GamePlugin/releases/latest) · [Build instructions](https://github.com/selenter-c/NPCStudio-Build)
 
 ## What the plugin handles
 
@@ -25,4 +25,4 @@ The same DLL targets Steam 1.6.1130, 1.6.1170, 1.7.99, and 1.7.104, plus GOG 1.6
 
 Developed with **OpenAI Codex**, which helped solve technical problems in the SKSE, rendering, save-state, and UI implementations.
 
-NPC Studio's original native source uses the [MIT license](LICENSE), as declared in `vcpkg.json`. Vendored SDK headers retain their upstream notices in [include](include). The distributed DLL is a combined work with CommonLibSSE-NG under **GPL-3.0-or-later**, subject to [its upstream exceptions](https://github.com/alandtse/CommonLibVR/blob/8eaddedd1542290701ccb0e9e88b2af8b3cea597/EXCEPTIONS.md). Corresponding source is available alongside the beta download.
+NPC Studio's original native source uses the [MIT license](LICENSE), as declared in `vcpkg.json`. Vendored SDK headers retain their upstream notices in [include](include). The distributed DLL is a combined work with CommonLibSSE-NG under **GPL-3.0-or-later**, subject to [its upstream exceptions](https://github.com/alandtse/CommonLibVR/blob/8eaddedd1542290701ccb0e9e88b2af8b3cea597/EXCEPTIONS.md). Corresponding source is available alongside each release download.
